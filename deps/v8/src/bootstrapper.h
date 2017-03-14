@@ -80,6 +80,7 @@ class Bootstrapper final {
       MaybeHandle<JSGlobalProxy> maybe_global_proxy,
       v8::Local<v8::ObjectTemplate> global_object_template,
       v8::ExtensionConfiguration* extensions, size_t context_snapshot_index,
+      v8::DeserializeInternalFieldsCallback internal_fields_deserializer,
       GlobalContextType context_type = FULL_CONTEXT);
 
   Handle<JSGlobalProxy> NewRemoteContext(
@@ -115,13 +116,10 @@ class Bootstrapper final {
                             Handle<String> source, int argc,
                             Handle<Object> argv[], NativesFlag natives_flag);
   static bool CompileBuiltin(Isolate* isolate, int index);
-  static bool CompileExperimentalBuiltin(Isolate* isolate, int index);
   static bool CompileExtraBuiltin(Isolate* isolate, int index);
   static bool CompileExperimentalExtraBuiltin(Isolate* isolate, int index);
 
   static void ExportFromRuntime(Isolate* isolate, Handle<JSObject> container);
-  static void ExportExperimentalFromRuntime(Isolate* isolate,
-                                            Handle<JSObject> container);
 
  private:
   Isolate* isolate_;

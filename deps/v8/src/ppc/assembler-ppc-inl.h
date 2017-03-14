@@ -41,7 +41,7 @@
 
 #include "src/assembler.h"
 #include "src/debug/debug.h"
-
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -131,6 +131,17 @@ Address RelocInfo::constant_pool_entry_address() {
 
 int RelocInfo::target_address_size() { return Assembler::kSpecialTargetSize; }
 
+Address Assembler::target_address_at(Address pc, Code* code) {
+  Address constant_pool = code ? code->constant_pool() : NULL;
+  return target_address_at(pc, constant_pool);
+}
+
+void Assembler::set_target_address_at(Isolate* isolate, Address pc, Code* code,
+                                      Address target,
+                                      ICacheFlushMode icache_flush_mode) {
+  Address constant_pool = code ? code->constant_pool() : NULL;
+  set_target_address_at(isolate, pc, constant_pool, target, icache_flush_mode);
+}
 
 Address Assembler::target_address_from_return_address(Address pc) {
 // Returns the address of the call target from the return address that will
@@ -164,20 +175,19 @@ Address Assembler::return_address_from_call_start(Address pc) {
   return pc + (len + 2) * kInstrSize;
 }
 
-Object* RelocInfo::target_object() {
+HeapObject* RelocInfo::target_object() {
   DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
-  return reinterpret_cast<Object*>(Assembler::target_address_at(pc_, host_));
+  return HeapObject::cast(
+      reinterpret_cast<Object*>(Assembler::target_address_at(pc_, host_)));
 }
 
-
-Handle<Object> RelocInfo::target_object_handle(Assembler* origin) {
+Handle<HeapObject> RelocInfo::target_object_handle(Assembler* origin) {
   DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
-  return Handle<Object>(
-      reinterpret_cast<Object**>(Assembler::target_address_at(pc_, host_)));
+  return Handle<HeapObject>(
+      reinterpret_cast<HeapObject**>(Assembler::target_address_at(pc_, host_)));
 }
 
-
-void RelocInfo::set_target_object(Object* target,
+void RelocInfo::set_target_object(HeapObject* target,
                                   WriteBarrierMode write_barrier_mode,
                                   ICacheFlushMode icache_flush_mode) {
   DCHECK(IsCodeTarget(rmode_) || rmode_ == EMBEDDED_OBJECT);
@@ -255,10 +265,9 @@ static const int kCodeAgingTargetDelta = 1 * Assembler::kInstrSize;
 static const int kNoCodeAgeSequenceLength =
     (kNoCodeAgeSequenceInstructions * Assembler::kInstrSize);
 
-
-Handle<Object> RelocInfo::code_age_stub_handle(Assembler* origin) {
+Handle<Code> RelocInfo::code_age_stub_handle(Assembler* origin) {
   UNREACHABLE();  // This should never be reached on PPC.
-  return Handle<Object>();
+  return Handle<Code>();
 }
 
 
@@ -466,9 +475,9 @@ Address Assembler::target_address_at(Address pc, Address constant_pool) {
 
 
 #if V8_TARGET_ARCH_PPC64
-const int kLoadIntptrOpcode = LD;
+const uint32_t kLoadIntptrOpcode = LD;
 #else
-const int kLoadIntptrOpcode = LWZ;
+const uint32_t kLoadIntptrOpcode = LWZ;
 #endif
 
 // Constant pool load sequence detection:
@@ -481,7 +490,7 @@ const int kLoadIntptrOpcode = LWZ;
 bool Assembler::IsConstantPoolLoadStart(Address pc,
                                         ConstantPoolEntry::Access* access) {
   Instr instr = instr_at(pc);
-  int opcode = instr & kOpcodeMask;
+  uint32_t opcode = instr & kOpcodeMask;
   if (!GetRA(instr).is(kConstantPoolRegister)) return false;
   bool overflowed = (opcode == ADDIS);
 #ifdef DEBUG
@@ -501,7 +510,7 @@ bool Assembler::IsConstantPoolLoadStart(Address pc,
 bool Assembler::IsConstantPoolLoadEnd(Address pc,
                                       ConstantPoolEntry::Access* access) {
   Instr instr = instr_at(pc);
-  int opcode = instr & kOpcodeMask;
+  uint32_t opcode = instr & kOpcodeMask;
   bool overflowed = false;
   if (!(opcode == kLoadIntptrOpcode || opcode == LFD)) return false;
   if (!GetRA(instr).is(kConstantPoolRegister)) {

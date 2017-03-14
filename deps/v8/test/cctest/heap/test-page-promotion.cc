@@ -10,9 +10,9 @@
 // (disallowed) include: src/factory.h -> src/objects-inl.h
 #include "src/objects-inl.h"
 // FIXME(mstarzinger, marja): This is weird, but required because of the missing
-// (disallowed) include: src/type-feedback-vector.h ->
-// src/type-feedback-vector-inl.h
-#include "src/type-feedback-vector-inl.h"
+// (disallowed) include: src/feedback-vector.h ->
+// src/feedback-vector-inl.h
+#include "src/feedback-vector-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-tester.h"
 #include "test/cctest/heap/heap-utils.h"
@@ -42,6 +42,9 @@ namespace v8 {
 namespace internal {
 
 UNINITIALIZED_TEST(PagePromotion_NewToOld) {
+  if (!i::FLAG_incremental_marking) return;
+  if (!i::FLAG_page_promotion) return;
+
   v8::Isolate* isolate = NewIsolateForPagePromotion();
   i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
   {
@@ -75,6 +78,8 @@ UNINITIALIZED_TEST(PagePromotion_NewToOld) {
 }
 
 UNINITIALIZED_TEST(PagePromotion_NewToNew) {
+  if (!i::FLAG_page_promotion) return;
+
   v8::Isolate* isolate = NewIsolateForPagePromotion();
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
   {
@@ -99,6 +104,8 @@ UNINITIALIZED_TEST(PagePromotion_NewToNew) {
 }
 
 UNINITIALIZED_TEST(PagePromotion_NewToNewJSArrayBuffer) {
+  if (!i::FLAG_page_promotion) return;
+
   // Test makes sure JSArrayBuffer backing stores are still tracked after
   // new-to-new promotion.
   v8::Isolate* isolate = NewIsolateForPagePromotion();
@@ -114,7 +121,7 @@ UNINITIALIZED_TEST(PagePromotion_NewToNewJSArrayBuffer) {
     // Allocate a buffer we would like to check against.
     Handle<JSArrayBuffer> buffer =
         i_isolate->factory()->NewJSArrayBuffer(SharedFlag::kNotShared);
-    JSArrayBuffer::SetupAllocatingData(buffer, i_isolate, 100);
+    CHECK(JSArrayBuffer::SetupAllocatingData(buffer, i_isolate, 100));
     std::vector<Handle<FixedArray>> handles;
     // Simulate a full space, filling the interesting page with live objects.
     heap::SimulateFullSpace(heap->new_space(), &handles);
@@ -137,6 +144,8 @@ UNINITIALIZED_TEST(PagePromotion_NewToNewJSArrayBuffer) {
 }
 
 UNINITIALIZED_HEAP_TEST(Regress658718) {
+  if (!i::FLAG_page_promotion) return;
+
   v8::Isolate* isolate = NewIsolateForPagePromotion(4, 8);
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
   {
