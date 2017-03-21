@@ -7,6 +7,7 @@
 #include "src/crankshaft/x87/lithium-codegen-x87.h"
 
 #include "src/base/bits.h"
+#include "src/builtins/builtins-constructor.h"
 #include "src/code-factory.h"
 #include "src/code-stubs.h"
 #include "src/codegen.h"
@@ -146,15 +147,18 @@ void LCodeGen::DoPrologue(LPrologue* instr) {
       __ CallRuntime(Runtime::kNewScriptContext);
       deopt_mode = Safepoint::kLazyDeopt;
     } else {
-      if (slots <= FastNewFunctionContextStub::kMaximumSlots) {
-        FastNewFunctionContextStub stub(isolate());
+      if (slots <=
+          ConstructorBuiltinsAssembler::MaximumFunctionContextSlots()) {
+        Callable callable = CodeFactory::FastNewFunctionContext(
+            isolate(), info()->scope()->scope_type());
         __ mov(FastNewFunctionContextDescriptor::SlotsRegister(),
                Immediate(slots));
-        __ CallStub(&stub);
-        // Result of FastNewFunctionContextStub is always in new space.
+        __ Call(callable.code(), RelocInfo::CODE_TARGET);
+        // Result of the FastNewFunctionContext builtin is always in new space.
         need_write_barrier = false;
       } else {
-        __ push(edi);
+        __ Push(edi);
+        __ Push(Smi::FromInt(info()->scope()->scope_type()));
         __ CallRuntime(Runtime::kNewFunctionContext);
       }
     }
@@ -2194,12 +2198,6 @@ void LCodeGen::DoBranch(LBranch* instr) {
         __ j(equal, instr->TrueLabel(chunk_));
       }
 
-      if (expected & ToBooleanHint::kSimdValue) {
-        // SIMD value -> true.
-        __ CmpInstanceType(map, SIMD128_VALUE_TYPE);
-        __ j(equal, instr->TrueLabel(chunk_));
-      }
-
       if (expected & ToBooleanHint::kHeapNumber) {
         // heap number -> false iff +0, -0, or NaN.
         Label not_heap_number;
@@ -2474,68 +2472,6 @@ void LCodeGen::DoHasInstanceTypeAndBranch(LHasInstanceTypeAndBranch* instr) {
   __ CmpObjectType(input, TestType(instr->hydrogen()), temp);
   EmitBranch(instr, BranchCondition(instr->hydrogen()));
 }
-
-// Branches to a label or falls through with the answer in the z flag.  Trashes
-// the temp registers, but not the input.
-void LCodeGen::EmitClassOfTest(Label* is_true,
-                               Label* is_false,
-                               Handle<String>class_name,
-                               Register input,
-                               Register temp,
-                               Register temp2) {
-  DCHECK(!input.is(temp));
-  DCHECK(!input.is(temp2));
-  DCHECK(!temp.is(temp2));
-  __ JumpIfSmi(input, is_false);
-
-  __ CmpObjectType(input, FIRST_FUNCTION_TYPE, temp);
-  STATIC_ASSERT(LAST_FUNCTION_TYPE == LAST_TYPE);
-  if (String::Equals(isolate()->factory()->Function_string(), class_name)) {
-    __ j(above_equal, is_true);
-  } else {
-    __ j(above_equal, is_false);
-  }
-
-  // Now we are in the FIRST-LAST_NONCALLABLE_SPEC_OBJECT_TYPE range.
-  // Check if the constructor in the map is a function.
-  __ GetMapConstructor(temp, temp, temp2);
-  // Objects with a non-function constructor have class 'Object'.
-  __ CmpInstanceType(temp2, JS_FUNCTION_TYPE);
-  if (String::Equals(class_name, isolate()->factory()->Object_string())) {
-    __ j(not_equal, is_true);
-  } else {
-    __ j(not_equal, is_false);
-  }
-
-  // temp now contains the constructor function. Grab the
-  // instance class name from there.
-  __ mov(temp, FieldOperand(temp, JSFunction::kSharedFunctionInfoOffset));
-  __ mov(temp, FieldOperand(temp,
-                            SharedFunctionInfo::kInstanceClassNameOffset));
-  // The class name we are testing against is internalized since it's a literal.
-  // The name in the constructor is internalized because of the way the context
-  // is booted.  This routine isn't expected to work for random API-created
-  // classes and it doesn't have to because you can't access it with natives
-  // syntax.  Since both sides are internalized it is sufficient to use an
-  // identity comparison.
-  __ cmp(temp, class_name);
-  // End with the answer in the z flag.
-}
-
-
-void LCodeGen::DoClassOfTestAndBranch(LClassOfTestAndBranch* instr) {
-  Register input = ToRegister(instr->value());
-  Register temp = ToRegister(instr->temp());
-  Register temp2 = ToRegister(instr->temp2());
-
-  Handle<String> class_name = instr->hydrogen()->class_name();
-
-  EmitClassOfTest(instr->TrueLabel(chunk_), instr->FalseLabel(chunk_),
-      class_name, input, temp, temp2);
-
-  EmitBranch(instr, equal);
-}
-
 
 void LCodeGen::DoCmpMapAndBranch(LCmpMapAndBranch* instr) {
   Register reg = ToRegister(instr->value());
@@ -3017,7 +2953,16 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
   // object as a receiver to normal functions. Values have to be
   // passed unchanged to builtins and strict-mode functions.
   Label receiver_ok, global_object;
-  Label::Distance dist = DeoptEveryNTimes() ? Label::kFar : Label::kNear;
+  Label::Distance dist;
+
+  // For x87 debug version jitted code's size exceeds 128 bytes whether
+  // FLAG_deopt_every_n_times
+  // is set or not. Always use Label:kFar for label distance for debug mode.
+  if (FLAG_debug_code)
+    dist = Label::kFar;
+  else
+    dist = DeoptEveryNTimes() ? Label::kFar : Label::kNear;
+
   Register scratch = ToRegister(instr->temp());
 
   if (!instr->hydrogen()->known_function()) {
@@ -3037,9 +2982,9 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
 
   // Normal function. Replace undefined or null with global receiver.
   __ cmp(receiver, factory()->null_value());
-  __ j(equal, &global_object, Label::kNear);
+  __ j(equal, &global_object, dist);
   __ cmp(receiver, factory()->undefined_value());
-  __ j(equal, &global_object, Label::kNear);
+  __ j(equal, &global_object, dist);
 
   // The receiver should be a JS object.
   __ test(receiver, Immediate(kSmiTagMask));
@@ -3047,7 +2992,7 @@ void LCodeGen::DoWrapReceiver(LWrapReceiver* instr) {
   __ CmpObjectType(receiver, FIRST_JS_RECEIVER_TYPE, scratch);
   DeoptimizeIf(below, instr, DeoptimizeReason::kNotAJavaScriptObject);
 
-  __ jmp(&receiver_ok, Label::kNear);
+  __ jmp(&receiver_ok, dist);
   __ bind(&global_object);
   __ mov(receiver, FieldOperand(function, JSFunction::kContextOffset));
   __ mov(receiver, ContextOperand(receiver, Context::NATIVE_CONTEXT_INDEX));
@@ -3144,7 +3089,7 @@ void LCodeGen::DoContext(LContext* instr) {
 
 void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
   DCHECK(ToRegister(instr->context()).is(esi));
-  __ push(Immediate(instr->hydrogen()->pairs()));
+  __ push(Immediate(instr->hydrogen()->declarations()));
   __ push(Immediate(Smi::FromInt(instr->hydrogen()->flags())));
   __ push(Immediate(instr->hydrogen()->feedback_vector()));
   CallRuntime(Runtime::kDeclareGlobals, instr);
@@ -4933,6 +4878,15 @@ void LCodeGen::DoCheckValue(LCheckValue* instr) {
 
 
 void LCodeGen::DoDeferredInstanceMigration(LCheckMaps* instr, Register object) {
+  Label deopt, done;
+  // If the map is not deprecated the migration attempt does not make sense.
+  __ push(object);
+  __ mov(object, FieldOperand(object, HeapObject::kMapOffset));
+  __ test(FieldOperand(object, Map::kBitField3Offset),
+          Immediate(Map::Deprecated::kMask));
+  __ pop(object);
+  __ j(zero, &deopt);
+
   {
     PushSafepointRegistersScope scope(this);
     __ push(object);
@@ -4943,7 +4897,12 @@ void LCodeGen::DoDeferredInstanceMigration(LCheckMaps* instr, Register object) {
 
     __ test(eax, Immediate(kSmiTagMask));
   }
-  DeoptimizeIf(zero, instr, DeoptimizeReason::kInstanceMigrationFailed);
+  __ j(not_zero, &done);
+
+  __ bind(&deopt);
+  DeoptimizeIf(no_condition, instr, DeoptimizeReason::kInstanceMigrationFailed);
+
+  __ bind(&done);
 }
 
 
@@ -5378,17 +5337,6 @@ Condition LCodeGen::EmitTypeofIs(LTypeofIsAndBranch* instr, Register input) {
     __ test_b(FieldOperand(input, Map::kBitFieldOffset),
               Immediate((1 << Map::kIsCallable) | (1 << Map::kIsUndetectable)));
     final_branch_condition = zero;
-
-// clang-format off
-#define SIMD128_TYPE(TYPE, Type, type, lane_count, lane_type)         \
-  } else if (String::Equals(type_name, factory()->type##_string())) { \
-    __ JumpIfSmi(input, false_label, false_distance);                 \
-    __ cmp(FieldOperand(input, HeapObject::kMapOffset),               \
-           factory()->type##_map());                                  \
-    final_branch_condition = equal;
-  SIMD128_TYPES(SIMD128_TYPE)
-#undef SIMD128_TYPE
-    // clang-format on
 
   } else {
     __ jmp(false_label, false_distance);

@@ -1,0 +1,19 @@
+Function: test
+Object
+number
+string
+number
+
+Function: test
+Object
+number
+string
+number
+undefined
+string
+Object
+Object
+
+*%(basename)s:40: throw otherwise test fails with --stress-opt
+throw "throw otherwise test fails with --stress-opt";
+^

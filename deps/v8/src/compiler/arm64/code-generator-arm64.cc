@@ -4,13 +4,15 @@
 
 #include "src/compiler/code-generator.h"
 
+#include "src/arm64/assembler-arm64-inl.h"
 #include "src/arm64/frames-arm64.h"
-#include "src/arm64/macro-assembler-arm64.h"
+#include "src/arm64/macro-assembler-arm64-inl.h"
 #include "src/compilation-info.h"
 #include "src/compiler/code-generator-impl.h"
 #include "src/compiler/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/osr.h"
+#include "src/heap/heap-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -98,6 +100,10 @@ class Arm64OperandConverter final : public InstructionOperandConverter {
   Register OutputRegister64() { return OutputRegister(); }
 
   Register OutputRegister32() { return ToRegister(instr_->Output()).W(); }
+
+  Register TempRegister32(size_t index) {
+    return ToRegister(instr_->TempAt(index)).W();
+  }
 
   Operand InputOperand2_32(size_t index) {
     switch (AddressingModeField::decode(instr_->opcode())) {
@@ -209,17 +215,16 @@ class Arm64OperandConverter final : public InstructionOperandConverter {
     Constant constant = ToConstant(operand);
     switch (constant.type()) {
       case Constant::kInt32:
-        if (constant.rmode() == RelocInfo::WASM_MEMORY_SIZE_REFERENCE) {
+        if (RelocInfo::IsWasmSizeReference(constant.rmode())) {
           return Operand(constant.ToInt32(), constant.rmode());
         } else {
           return Operand(constant.ToInt32());
         }
       case Constant::kInt64:
-        if (constant.rmode() == RelocInfo::WASM_MEMORY_REFERENCE ||
-            constant.rmode() == RelocInfo::WASM_GLOBAL_REFERENCE) {
+        if (RelocInfo::IsWasmPtrReference(constant.rmode())) {
           return Operand(constant.ToInt64(), constant.rmode());
         } else {
-          DCHECK(constant.rmode() != RelocInfo::WASM_MEMORY_SIZE_REFERENCE);
+          DCHECK(!RelocInfo::IsWasmSizeReference(constant.rmode()));
           return Operand(constant.ToInt64());
         }
       case Constant::kFloat32:
@@ -528,6 +533,32 @@ Condition FlagsConditionToCondition(FlagsCondition condition) {
     __ Dmb(InnerShareable, BarrierAll);                               \
   } while (0)
 
+#define ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(load_instr, store_instr)      \
+  do {                                                                 \
+    Label exchange;                                                    \
+    __ bind(&exchange);                                                \
+    __ Add(i.TempRegister(0), i.InputRegister(0), i.InputRegister(1)); \
+    __ load_instr(i.OutputRegister32(), i.TempRegister(0));            \
+    __ store_instr(i.TempRegister32(0), i.InputRegister32(2),          \
+                   i.TempRegister(0));                                 \
+    __ cbnz(i.TempRegister32(0), &exchange);                           \
+  } while (0)
+
+#define ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(load_instr, store_instr) \
+  do {                                                                    \
+    Label compareExchange;                                                \
+    Label exit;                                                           \
+    __ bind(&compareExchange);                                            \
+    __ Add(i.TempRegister(0), i.InputRegister(0), i.InputRegister(1));    \
+    __ load_instr(i.OutputRegister32(), i.TempRegister(0));               \
+    __ cmp(i.TempRegister32(1), i.OutputRegister32());                    \
+    __ B(ne, &exit);                                                      \
+    __ store_instr(i.TempRegister32(0), i.InputRegister32(3),             \
+                   i.TempRegister(0));                                    \
+    __ cbnz(i.TempRegister32(0), &compareExchange);                       \
+    __ bind(&exit);                                                       \
+  } while (0)
+
 #define ASSEMBLE_IEEE754_BINOP(name)                                          \
   do {                                                                        \
     FrameScope scope(masm(), StackFrame::MANUAL);                             \
@@ -571,7 +602,8 @@ void CodeGenerator::AssemblePopArgumentsAdaptorFrame(Register args_reg,
 
   // Check if current frame is an arguments adaptor frame.
   __ Ldr(scratch1, MemOperand(fp, StandardFrameConstants::kContextOffset));
-  __ Cmp(scratch1, Operand(Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR)));
+  __ Cmp(scratch1,
+         Operand(StackFrame::TypeToMarker(StackFrame::ARGUMENTS_ADAPTOR)));
   __ B(ne, &done);
 
   // Load arguments count from current arguments adaptor frame (note, it
@@ -775,10 +807,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchDeoptimize: {
       int deopt_state_id =
           BuildTranslation(instr, -1, 0, OutputFrameStateCombine::Ignore());
-      Deoptimizer::BailoutType bailout_type =
-          Deoptimizer::BailoutType(MiscField::decode(instr->opcode()));
-      CodeGenResult result = AssembleDeoptimizerCall(
-          deopt_state_id, bailout_type, current_source_position_);
+      CodeGenResult result =
+          AssembleDeoptimizerCall(deopt_state_id, current_source_position_);
       if (result != kSuccess) return result;
       break;
     }
@@ -1161,11 +1191,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     case kArm64Ubfx:
       __ Ubfx(i.OutputRegister(), i.InputRegister(0), i.InputInt6(1),
-              i.InputInt6(2));
+              i.InputInt32(2));
       break;
     case kArm64Ubfx32:
       __ Ubfx(i.OutputRegister32(), i.InputRegister32(0), i.InputInt5(1),
-              i.InputInt5(2));
+              i.InputInt32(2));
       break;
     case kArm64Ubfiz32:
       __ Ubfiz(i.OutputRegister32(), i.InputRegister32(0), i.InputInt5(1),
@@ -1280,10 +1310,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Cmn(i.InputOrZeroRegister32(0), i.InputOperand2_32(1));
       break;
     case kArm64Tst:
-      __ Tst(i.InputOrZeroRegister64(0), i.InputOperand(1));
+      __ Tst(i.InputOrZeroRegister64(0), i.InputOperand2_64(1));
       break;
     case kArm64Tst32:
-      __ Tst(i.InputOrZeroRegister32(0), i.InputOperand32(1));
+      __ Tst(i.InputOrZeroRegister32(0), i.InputOperand2_32(1));
       break;
     case kArm64Float32Cmp:
       if (instr->InputAt(1)->IsFPRegister()) {
@@ -1633,6 +1663,45 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
              MemOperand(i.InputRegister(0), i.InputRegister(1)));
       __ Dmb(InnerShareable, BarrierAll);
       break;
+    case kAtomicExchangeInt8:
+      ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(ldaxrb, stlxrb);
+      __ Sxtb(i.OutputRegister(0), i.OutputRegister(0));
+      break;
+    case kAtomicExchangeUint8:
+      ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(ldaxrb, stlxrb);
+      break;
+    case kAtomicExchangeInt16:
+      ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(ldaxrh, stlxrh);
+      __ Sxth(i.OutputRegister(0), i.OutputRegister(0));
+      break;
+    case kAtomicExchangeUint16:
+      ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(ldaxrh, stlxrh);
+      break;
+    case kAtomicExchangeWord32:
+      ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(ldaxr, stlxr);
+      break;
+    case kAtomicCompareExchangeInt8:
+      __ Uxtb(i.TempRegister(1), i.InputRegister(2));
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(ldaxrb, stlxrb);
+      __ Sxtb(i.OutputRegister(0), i.OutputRegister(0));
+      break;
+    case kAtomicCompareExchangeUint8:
+      __ Uxtb(i.TempRegister(1), i.InputRegister(2));
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(ldaxrb, stlxrb);
+      break;
+    case kAtomicCompareExchangeInt16:
+      __ Uxth(i.TempRegister(1), i.InputRegister(2));
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(ldaxrh, stlxrh);
+      __ Sxth(i.OutputRegister(0), i.OutputRegister(0));
+      break;
+    case kAtomicCompareExchangeUint16:
+      __ Uxth(i.TempRegister(1), i.InputRegister(2));
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(ldaxrh, stlxrh);
+      break;
+    case kAtomicCompareExchangeWord32:
+      __ mov(i.TempRegister(1), i.InputRegister(2));
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(ldaxr, stlxr);
+      break;
   }
   return kSuccess;
 }  // NOLINT(readability/fn_size)
@@ -1702,6 +1771,67 @@ void CodeGenerator::AssembleArchJump(RpoNumber target) {
   if (!IsNextInAssemblyOrder(target)) __ B(GetLabel(target));
 }
 
+void CodeGenerator::AssembleArchTrap(Instruction* instr,
+                                     FlagsCondition condition) {
+  class OutOfLineTrap final : public OutOfLineCode {
+   public:
+    OutOfLineTrap(CodeGenerator* gen, bool frame_elided, Instruction* instr)
+        : OutOfLineCode(gen),
+          frame_elided_(frame_elided),
+          instr_(instr),
+          gen_(gen) {}
+    void Generate() final {
+      Arm64OperandConverter i(gen_, instr_);
+      Builtins::Name trap_id =
+          static_cast<Builtins::Name>(i.InputInt32(instr_->InputCount() - 1));
+      bool old_has_frame = __ has_frame();
+      if (frame_elided_) {
+        __ set_has_frame(true);
+        __ EnterFrame(StackFrame::WASM_COMPILED);
+      }
+      GenerateCallToTrap(trap_id);
+      if (frame_elided_) {
+        __ set_has_frame(old_has_frame);
+      }
+    }
+
+   private:
+    void GenerateCallToTrap(Builtins::Name trap_id) {
+      if (trap_id == Builtins::builtin_count) {
+        // We cannot test calls to the runtime in cctest/test-run-wasm.
+        // Therefore we emit a call to C here instead of a call to the runtime.
+        __ CallCFunction(
+            ExternalReference::wasm_call_trap_callback_for_testing(isolate()),
+            0);
+        __ LeaveFrame(StackFrame::WASM_COMPILED);
+        __ Ret();
+      } else {
+        DCHECK(csp.Is(__ StackPointer()));
+        // Initialize the jssp because it is required for the runtime call.
+        __ Mov(jssp, csp);
+        gen_->AssembleSourcePosition(instr_);
+        __ Call(handle(isolate()->builtins()->builtin(trap_id), isolate()),
+                RelocInfo::CODE_TARGET);
+        ReferenceMap* reference_map =
+            new (gen_->zone()) ReferenceMap(gen_->zone());
+        gen_->RecordSafepoint(reference_map, Safepoint::kSimple, 0,
+                              Safepoint::kNoLazyDeopt);
+        if (FLAG_debug_code) {
+          // The trap code should never return.
+          __ Brk(0);
+        }
+      }
+    }
+    bool frame_elided_;
+    Instruction* instr_;
+    CodeGenerator* gen_;
+  };
+  bool frame_elided = !frame_access_state()->has_frame();
+  auto ool = new (zone()) OutOfLineTrap(this, frame_elided, instr);
+  Label* tlabel = ool->entry();
+  Condition cc = FlagsConditionToCondition(condition);
+  __ B(cc, tlabel);
+}
 
 // Assemble boolean materializations after this instruction.
 void CodeGenerator::AssembleArchBoolean(Instruction* instr,
@@ -1749,14 +1879,19 @@ void CodeGenerator::AssembleArchTableSwitch(Instruction* instr) {
 }
 
 CodeGenerator::CodeGenResult CodeGenerator::AssembleDeoptimizerCall(
-    int deoptimization_id, Deoptimizer::BailoutType bailout_type,
-    SourcePosition pos) {
+    int deoptimization_id, SourcePosition pos) {
+  DeoptimizeKind deoptimization_kind = GetDeoptimizationKind(deoptimization_id);
+  DeoptimizeReason deoptimization_reason =
+      GetDeoptimizationReason(deoptimization_id);
+  Deoptimizer::BailoutType bailout_type =
+      deoptimization_kind == DeoptimizeKind::kSoft ? Deoptimizer::SOFT
+                                                   : Deoptimizer::EAGER;
   Address deopt_entry = Deoptimizer::GetDeoptimizationEntry(
       isolate(), deoptimization_id, bailout_type);
   if (deopt_entry == nullptr) return kTooManyDeoptimizationBailouts;
-  DeoptimizeReason deoptimization_reason =
-      GetDeoptimizationReason(deoptimization_id);
-  __ RecordDeoptReason(deoptimization_reason, pos, deoptimization_id);
+  if (isolate()->NeedsSourcePositionsForProfiling()) {
+    __ RecordDeoptReason(deoptimization_reason, pos, deoptimization_id);
+  }
   __ Call(deopt_entry, RelocInfo::RUNTIME_ENTRY);
   return kSuccess;
 }
@@ -1828,7 +1963,6 @@ void CodeGenerator::AssembleConstructFrame() {
       osr_pc_offset_ = __ pc_offset();
       shrink_slots -= OsrHelper(info()).UnoptimizedFrameSlots();
     }
-
     // Build remainder of frame, including accounting for and filling-in
     // frame-specific header information, e.g. claiming the extra slot that
     // other platforms explicitly push for STUB frames and frames recording
@@ -1843,7 +1977,7 @@ void CodeGenerator::AssembleConstructFrame() {
     if (is_stub_frame) {
       UseScratchRegisterScope temps(masm());
       Register temp = temps.AcquireX();
-      __ Mov(temp, Smi::FromInt(info()->GetOutputStackFrameType()));
+      __ Mov(temp, StackFrame::TypeToMarker(info()->GetOutputStackFrameType()));
       __ Str(temp, MemOperand(fp, TypedFrameConstants::kFrameTypeOffset));
     }
   }

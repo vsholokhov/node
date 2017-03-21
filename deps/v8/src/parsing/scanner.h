@@ -209,9 +209,22 @@ class Scanner {
   // (the token last returned by Next()).
   Location location() const { return current_.location; }
 
+  // This error is specifically an invalid hex or unicode escape sequence.
   bool has_error() const { return scanner_error_ != MessageTemplate::kNone; }
   MessageTemplate::Template error() const { return scanner_error_; }
   Location error_location() const { return scanner_error_location_; }
+
+  bool has_invalid_template_escape() const {
+    return current_.invalid_template_escape_message != MessageTemplate::kNone;
+  }
+  MessageTemplate::Template invalid_template_escape_message() const {
+    DCHECK(has_invalid_template_escape());
+    return current_.invalid_template_escape_message;
+  }
+  Location invalid_template_escape_location() const {
+    DCHECK(has_invalid_template_escape());
+    return current_.invalid_template_escape_location;
+  }
 
   // Similar functions for the upcoming token.
 
@@ -234,9 +247,10 @@ class Scanner {
     return next_.literal_chars->is_contextual_keyword(keyword);
   }
 
-  const AstRawString* CurrentSymbol(AstValueFactory* ast_value_factory);
-  const AstRawString* NextSymbol(AstValueFactory* ast_value_factory);
-  const AstRawString* CurrentRawSymbol(AstValueFactory* ast_value_factory);
+  const AstRawString* CurrentSymbol(AstValueFactory* ast_value_factory) const;
+  const AstRawString* NextSymbol(AstValueFactory* ast_value_factory) const;
+  const AstRawString* CurrentRawSymbol(
+      AstValueFactory* ast_value_factory) const;
 
   double DoubleValue();
   bool ContainsDot();
@@ -268,20 +282,21 @@ class Scanner {
     return false;
   }
 
-  int FindSymbol(DuplicateFinder* finder, int value);
+  // Check whether the CurrentSymbol() has already been seen.
+  // The DuplicateFinder holds the data, so different instances can be used
+  // for different sets of duplicates to check for.
+  bool IsDuplicateSymbol(DuplicateFinder* duplicate_finder,
+                         AstValueFactory* ast_value_factory) const;
 
   UnicodeCache* unicode_cache() { return unicode_cache_; }
 
   // Returns the location of the last seen octal literal.
   Location octal_position() const { return octal_pos_; }
-  void clear_octal_position() { octal_pos_ = Location::invalid(); }
-  // Returns the location of the last seen decimal literal with a leading zero.
-  Location decimal_with_leading_zero_position() const {
-    return decimal_with_leading_zero_pos_;
+  void clear_octal_position() {
+    octal_pos_ = Location::invalid();
+    octal_message_ = MessageTemplate::kNone;
   }
-  void clear_decimal_with_leading_zero_position() {
-    decimal_with_leading_zero_pos_ = Location::invalid();
-  }
+  MessageTemplate::Template octal_message() const { return octal_message_; }
 
   // Returns the value of the last smi that was scanned.
   uint32_t smi_value() const { return current_.smi_value_; }
@@ -315,24 +330,17 @@ class Scanner {
   Token::Value ScanTemplateStart();
   Token::Value ScanTemplateContinuation();
 
-  Handle<String> SourceUrl(Isolate* isolate) const {
-    Handle<String> tmp;
-    if (source_url_.length() > 0) tmp = source_url_.Internalize(isolate);
-    return tmp;
-  }
-
-  Handle<String> SourceMappingUrl(Isolate* isolate) const {
-    Handle<String> tmp;
-    if (source_mapping_url_.length() > 0)
-      tmp = source_mapping_url_.Internalize(isolate);
-    return tmp;
-  }
-
-  bool IdentifierIsFutureStrictReserved(const AstRawString* string) const;
+  Handle<String> SourceUrl(Isolate* isolate) const;
+  Handle<String> SourceMappingUrl(Isolate* isolate) const;
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
  private:
+  // Scoped helper for saving & restoring scanner error state.
+  // This is used for tagged template literals, in which normally forbidden
+  // escape sequences are allowed.
+  class ErrorState;
+
   // Scoped helper for literal recording. Automatically drops the literal
   // if aborting the scanning before it's complete.
   class LiteralScope {
@@ -358,36 +366,16 @@ class Scanner {
     ~LiteralBuffer() { backing_store_.Dispose(); }
 
     INLINE(void AddChar(char code_unit)) {
-      if (position_ >= backing_store_.length()) ExpandBuffer();
-      DCHECK(is_one_byte_);
       DCHECK(IsValidAscii(code_unit));
-      backing_store_[position_] = static_cast<byte>(code_unit);
-      position_ += kOneByteSize;
-      return;
+      AddOneByteChar(static_cast<byte>(code_unit));
     }
 
     INLINE(void AddChar(uc32 code_unit)) {
-      if (position_ >= backing_store_.length()) ExpandBuffer();
-      if (is_one_byte_) {
-        if (code_unit <= static_cast<uc32>(unibrow::Latin1::kMaxChar)) {
-          backing_store_[position_] = static_cast<byte>(code_unit);
-          position_ += kOneByteSize;
-          return;
-        }
-        ConvertToTwoByte();
-      }
-      if (code_unit <=
-          static_cast<uc32>(unibrow::Utf16::kMaxNonSurrogateCharCode)) {
-        *reinterpret_cast<uint16_t*>(&backing_store_[position_]) = code_unit;
-        position_ += kUC16Size;
+      if (is_one_byte_ &&
+          code_unit <= static_cast<uc32>(unibrow::Latin1::kMaxChar)) {
+        AddOneByteChar(static_cast<byte>(code_unit));
       } else {
-        *reinterpret_cast<uint16_t*>(&backing_store_[position_]) =
-            unibrow::Utf16::LeadSurrogate(code_unit);
-        position_ += kUC16Size;
-        if (position_ >= backing_store_.length()) ExpandBuffer();
-        *reinterpret_cast<uint16_t*>(&backing_store_[position_]) =
-            unibrow::Utf16::TrailSurrogate(code_unit);
-        position_ += kUC16Size;
+        AddCharSlow(code_unit);
       }
     }
 
@@ -439,42 +427,17 @@ class Scanner {
       return iscntrl(code_unit) || isprint(code_unit);
     }
 
-    inline int NewCapacity(int min_capacity) {
-      int capacity = Max(min_capacity, backing_store_.length());
-      int new_capacity = Min(capacity * kGrowthFactory, capacity + kMaxGrowth);
-      return new_capacity;
-    }
-
-    void ExpandBuffer() {
-      Vector<byte> new_store = Vector<byte>::New(NewCapacity(kInitialCapacity));
-      MemCopy(new_store.start(), backing_store_.start(), position_);
-      backing_store_.Dispose();
-      backing_store_ = new_store;
-    }
-
-    void ConvertToTwoByte() {
+    INLINE(void AddOneByteChar(byte one_byte_char)) {
       DCHECK(is_one_byte_);
-      Vector<byte> new_store;
-      int new_content_size = position_ * kUC16Size;
-      if (new_content_size >= backing_store_.length()) {
-        // Ensure room for all currently read code units as UC16 as well
-        // as the code unit about to be stored.
-        new_store = Vector<byte>::New(NewCapacity(new_content_size));
-      } else {
-        new_store = backing_store_;
-      }
-      uint8_t* src = backing_store_.start();
-      uint16_t* dst = reinterpret_cast<uint16_t*>(new_store.start());
-      for (int i = position_ - 1; i >= 0; i--) {
-        dst[i] = src[i];
-      }
-      if (new_store.start() != backing_store_.start()) {
-        backing_store_.Dispose();
-        backing_store_ = new_store;
-      }
-      position_ = new_content_size;
-      is_one_byte_ = false;
+      if (position_ >= backing_store_.length()) ExpandBuffer();
+      backing_store_[position_] = one_byte_char;
+      position_ += kOneByteSize;
     }
+
+    void AddCharSlow(uc32 code_unit);
+    int NewCapacity(int min_capacity);
+    void ExpandBuffer();
+    void ConvertToTwoByte();
 
     bool is_one_byte_;
     int position_;
@@ -490,6 +453,8 @@ class Scanner {
     LiteralBuffer* raw_literal_chars;
     uint32_t smi_value_;
     Token::Value token;
+    MessageTemplate::Template invalid_template_escape_message;
+    Location invalid_template_escape_location;
   };
 
   static const int kCharacterLookaheadBufferSize = 1;
@@ -508,12 +473,15 @@ class Scanner {
     current_.token = Token::UNINITIALIZED;
     current_.literal_chars = NULL;
     current_.raw_literal_chars = NULL;
+    current_.invalid_template_escape_message = MessageTemplate::kNone;
     next_.token = Token::UNINITIALIZED;
     next_.literal_chars = NULL;
     next_.raw_literal_chars = NULL;
+    next_.invalid_template_escape_message = MessageTemplate::kNone;
     next_next_.token = Token::UNINITIALIZED;
     next_next_.literal_chars = NULL;
     next_next_.raw_literal_chars = NULL;
+    next_next_.invalid_template_escape_message = MessageTemplate::kNone;
     found_html_comment_ = false;
     scanner_error_ = MessageTemplate::kNone;
   }
@@ -655,7 +623,7 @@ class Scanner {
   // requested for tokens that do not have a literal. Hence, we treat any
   // token as a one-byte literal. E.g. Token::FUNCTION pretends to have a
   // literal "function".
-  Vector<const uint8_t> literal_one_byte_string() {
+  Vector<const uint8_t> literal_one_byte_string() const {
     if (current_.literal_chars)
       return current_.literal_chars->one_byte_literal();
     const char* str = Token::String(current_.token);
@@ -663,11 +631,11 @@ class Scanner {
     return Vector<const uint8_t>(str_as_uint8,
                                  Token::StringLength(current_.token));
   }
-  Vector<const uint16_t> literal_two_byte_string() {
+  Vector<const uint16_t> literal_two_byte_string() const {
     DCHECK_NOT_NULL(current_.literal_chars);
     return current_.literal_chars->two_byte_literal();
   }
-  bool is_literal_one_byte() {
+  bool is_literal_one_byte() const {
     return !current_.literal_chars || current_.literal_chars->is_one_byte();
   }
   int literal_length() const {
@@ -676,27 +644,27 @@ class Scanner {
   }
   // Returns the literal string for the next token (the token that
   // would be returned if Next() were called).
-  Vector<const uint8_t> next_literal_one_byte_string() {
+  Vector<const uint8_t> next_literal_one_byte_string() const {
     DCHECK_NOT_NULL(next_.literal_chars);
     return next_.literal_chars->one_byte_literal();
   }
-  Vector<const uint16_t> next_literal_two_byte_string() {
+  Vector<const uint16_t> next_literal_two_byte_string() const {
     DCHECK_NOT_NULL(next_.literal_chars);
     return next_.literal_chars->two_byte_literal();
   }
-  bool is_next_literal_one_byte() {
+  bool is_next_literal_one_byte() const {
     DCHECK_NOT_NULL(next_.literal_chars);
     return next_.literal_chars->is_one_byte();
   }
-  Vector<const uint8_t> raw_literal_one_byte_string() {
+  Vector<const uint8_t> raw_literal_one_byte_string() const {
     DCHECK_NOT_NULL(current_.raw_literal_chars);
     return current_.raw_literal_chars->one_byte_literal();
   }
-  Vector<const uint16_t> raw_literal_two_byte_string() {
+  Vector<const uint16_t> raw_literal_two_byte_string() const {
     DCHECK_NOT_NULL(current_.raw_literal_chars);
     return current_.raw_literal_chars->two_byte_literal();
   }
-  bool is_raw_literal_one_byte() {
+  bool is_raw_literal_one_byte() const {
     DCHECK_NOT_NULL(current_.raw_literal_chars);
     return current_.raw_literal_chars->is_one_byte();
   }
@@ -787,7 +755,7 @@ class Scanner {
 
   // Last-seen positions of potentially problematic tokens.
   Location octal_pos_;
-  Location decimal_with_leading_zero_pos_;
+  MessageTemplate::Template octal_message_;
 
   // One Unicode character look-ahead; c0_ < 0 at the end of the input.
   uc32 c0_;

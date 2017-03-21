@@ -6,9 +6,11 @@
 
 #include <sstream>
 
+#include "src/arm64/assembler-arm64-inl.h"
 #include "src/crankshaft/arm64/lithium-codegen-arm64.h"
 #include "src/crankshaft/hydrogen-osr.h"
 #include "src/crankshaft/lithium-inl.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -81,16 +83,6 @@ void LCallNewArray::PrintDataTo(StringStream* stream) {
   stream->Add(" #%d / ", arity());
   ElementsKind kind = hydrogen()->elements_kind();
   stream->Add(" (%s) ", ElementsKindToString(kind));
-}
-
-
-void LClassOfTestAndBranch::PrintDataTo(StringStream* stream) {
-  stream->Add("if class_of_test(");
-  value()->PrintTo(stream);
-  stream->Add(", \"%o\") then B%d else B%d",
-              *hydrogen()->class_name(),
-              true_block_id(),
-              false_block_id());
 }
 
 
@@ -1188,16 +1180,6 @@ LInstruction* LChunkBuilder::DoClampToUint8(HClampToUint8* instr) {
         DefineAsRegister(new(zone()) LClampTToUint8(reg,
                                                     TempDoubleRegister())));
   }
-}
-
-
-LInstruction* LChunkBuilder::DoClassOfTestAndBranch(
-    HClassOfTestAndBranch* instr) {
-  DCHECK(instr->value()->representation().IsTagged());
-  LOperand* value = UseRegisterAtStart(instr->value());
-  return new(zone()) LClassOfTestAndBranch(value,
-                                           TempRegister(),
-                                           TempRegister());
 }
 
 

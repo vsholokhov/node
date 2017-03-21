@@ -5,13 +5,16 @@
 #include "src/crankshaft/arm64/lithium-codegen-arm64.h"
 
 #include "src/arm64/frames-arm64.h"
+#include "src/arm64/macro-assembler-arm64-inl.h"
 #include "src/base/bits.h"
+#include "src/builtins/builtins-constructor.h"
 #include "src/code-factory.h"
 #include "src/code-stubs.h"
 #include "src/crankshaft/arm64/lithium-gap-resolver-arm64.h"
 #include "src/crankshaft/hydrogen-osr.h"
 #include "src/ic/ic.h"
 #include "src/ic/stub-cache.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -618,14 +621,17 @@ void LCodeGen::DoPrologue(LPrologue* instr) {
       __ CallRuntime(Runtime::kNewScriptContext);
       deopt_mode = Safepoint::kLazyDeopt;
     } else {
-      if (slots <= FastNewFunctionContextStub::kMaximumSlots) {
-        FastNewFunctionContextStub stub(isolate());
+      if (slots <=
+          ConstructorBuiltinsAssembler::MaximumFunctionContextSlots()) {
+        Callable callable = CodeFactory::FastNewFunctionContext(
+            isolate(), info()->scope()->scope_type());
         __ Mov(FastNewFunctionContextDescriptor::SlotsRegister(), slots);
-        __ CallStub(&stub);
-        // Result of FastNewFunctionContextStub is always in new space.
+        __ Call(callable.code(), RelocInfo::CODE_TARGET);
+        // Result of the FastNewFunctionContext builtin is always in new space.
         need_write_barrier = false;
       } else {
         __ Push(x1);
+        __ Push(Smi::FromInt(info()->scope()->scope_type()));
         __ CallRuntime(Runtime::kNewFunctionContext);
       }
     }
@@ -720,7 +726,7 @@ bool LCodeGen::GenerateDeferredCode() {
         DCHECK(info()->IsStub());
         frame_is_built_ = true;
         __ Push(lr, fp);
-        __ Mov(fp, Smi::FromInt(StackFrame::STUB));
+        __ Mov(fp, StackFrame::TypeToMarker(StackFrame::STUB));
         __ Push(fp);
         __ Add(fp, __ StackPointer(),
                TypedFrameConstants::kFixedFrameSizeFromFp);
@@ -799,7 +805,7 @@ bool LCodeGen::GenerateJumpTable() {
       UseScratchRegisterScope temps(masm());
       Register stub_marker = temps.AcquireX();
       __ Bind(&needs_frame);
-      __ Mov(stub_marker, Smi::FromInt(StackFrame::STUB));
+      __ Mov(stub_marker, StackFrame::TypeToMarker(StackFrame::STUB));
       __ Push(cp, stub_marker);
       __ Add(fp, __ StackPointer(), 2 * kPointerSize);
     }
@@ -1614,7 +1620,7 @@ void LCodeGen::DoArgumentsElements(LArgumentsElements* instr) {
            MemOperand(fp, StandardFrameConstants::kCallerFPOffset));
     __ Ldr(result, MemOperand(previous_fp,
                               CommonFrameConstants::kContextOrFrameTypeOffset));
-    __ Cmp(result, Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR));
+    __ Cmp(result, StackFrame::TypeToMarker(StackFrame::ARGUMENTS_ADAPTOR));
     __ Csel(result, fp, previous_fp, ne);
   } else {
     __ Mov(result, fp);
@@ -1861,12 +1867,6 @@ void LCodeGen::DoBranch(LBranch* instr) {
         __ B(eq, true_label);
       }
 
-      if (expected & ToBooleanHint::kSimdValue) {
-        // SIMD value -> true.
-        __ CompareInstanceType(map, scratch, SIMD128_VALUE_TYPE);
-        __ B(eq, true_label);
-      }
-
       if (expected & ToBooleanHint::kHeapNumber) {
         Label not_heap_number;
         __ JumpIfNotRoot(map, Heap::kHeapNumberMapRootIndex, &not_heap_number);
@@ -2020,6 +2020,13 @@ void LCodeGen::DoUnknownOSRValue(LUnknownOSRValue* instr) {
 
 void LCodeGen::DoDeferredInstanceMigration(LCheckMaps* instr, Register object) {
   Register temp = ToRegister(instr->temp());
+  Label deopt, done;
+  // If the map is not deprecated the migration attempt does not make sense.
+  __ Ldr(temp, FieldMemOperand(object, HeapObject::kMapOffset));
+  __ Ldr(temp, FieldMemOperand(temp, Map::kBitField3Offset));
+  __ Tst(temp, Operand(Map::Deprecated::kMask));
+  __ B(eq, &deopt);
+
   {
     PushSafepointRegistersScope scope(this);
     __ Push(object);
@@ -2029,7 +2036,13 @@ void LCodeGen::DoDeferredInstanceMigration(LCheckMaps* instr, Register object) {
         instr->pointer_map(), 1, Safepoint::kNoLazyDeopt);
     __ StoreToSafepointRegisterSlot(x0, temp);
   }
-  DeoptimizeIfSmi(temp, instr, DeoptimizeReason::kInstanceMigrationFailed);
+  __ Tst(temp, Operand(kSmiTagMask));
+  __ B(ne, &done);
+
+  __ bind(&deopt);
+  Deoptimize(instr, DeoptimizeReason::kInstanceMigrationFailed);
+
+  __ bind(&done);
 }
 
 
@@ -2215,56 +2228,6 @@ void LCodeGen::DoClampTToUint8(LClampTToUint8* instr) {
   __ ClampDoubleToUint8(result, dbl_scratch, dbl_scratch2);
 
   __ Bind(&done);
-}
-
-
-void LCodeGen::DoClassOfTestAndBranch(LClassOfTestAndBranch* instr) {
-  Handle<String> class_name = instr->hydrogen()->class_name();
-  Label* true_label = instr->TrueLabel(chunk_);
-  Label* false_label = instr->FalseLabel(chunk_);
-  Register input = ToRegister(instr->value());
-  Register scratch1 = ToRegister(instr->temp1());
-  Register scratch2 = ToRegister(instr->temp2());
-
-  __ JumpIfSmi(input, false_label);
-
-  Register map = scratch2;
-  __ CompareObjectType(input, map, scratch1, FIRST_FUNCTION_TYPE);
-  STATIC_ASSERT(LAST_FUNCTION_TYPE == LAST_TYPE);
-  if (String::Equals(isolate()->factory()->Function_string(), class_name)) {
-    __ B(hs, true_label);
-  } else {
-    __ B(hs, false_label);
-  }
-
-  // Check if the constructor in the map is a function.
-  {
-    UseScratchRegisterScope temps(masm());
-    Register instance_type = temps.AcquireX();
-    __ GetMapConstructor(scratch1, map, scratch2, instance_type);
-    __ Cmp(instance_type, JS_FUNCTION_TYPE);
-  }
-  // Objects with a non-function constructor have class 'Object'.
-  if (String::Equals(class_name, isolate()->factory()->Object_string())) {
-    __ B(ne, true_label);
-  } else {
-    __ B(ne, false_label);
-  }
-
-  // The constructor function is in scratch1. Get its instance class name.
-  __ Ldr(scratch1,
-         FieldMemOperand(scratch1, JSFunction::kSharedFunctionInfoOffset));
-  __ Ldr(scratch1,
-         FieldMemOperand(scratch1,
-                         SharedFunctionInfo::kInstanceClassNameOffset));
-
-  // The class name we are testing against is internalized since it's a literal.
-  // The name in the constructor is internalized because of the way the context
-  // is booted. This routine isn't expected to work for random API-created
-  // classes and it doesn't have to because you can't access it with natives
-  // syntax. Since both sides are internalized it is sufficient to use an
-  // identity comparison.
-  EmitCompareAndBranch(instr, eq, scratch1, Operand(class_name));
 }
 
 
@@ -2829,7 +2792,8 @@ void LCodeGen::PrepareForTailCall(const ParameterCount& actual,
   __ Ldr(scratch2, MemOperand(fp, StandardFrameConstants::kCallerFPOffset));
   __ Ldr(scratch3,
          MemOperand(scratch2, StandardFrameConstants::kContextOffset));
-  __ Cmp(scratch3, Operand(Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR)));
+  __ Cmp(scratch3,
+         Operand(StackFrame::TypeToMarker(StackFrame::ARGUMENTS_ADAPTOR)));
   __ B(ne, &no_arguments_adaptor);
 
   // Drop current frame and load arguments count from arguments adaptor frame.
@@ -3243,7 +3207,7 @@ void LCodeGen::DoLoadKeyedFixed(LLoadKeyedFixed* instr) {
       // protector cell contains (Smi) Isolate::kProtectorValid. Otherwise
       // it needs to bail out.
       __ LoadRoot(result, Heap::kArrayProtectorRootIndex);
-      __ Ldr(result, FieldMemOperand(result, Cell::kValueOffset));
+      __ Ldr(result, FieldMemOperand(result, PropertyCell::kValueOffset));
       __ Cmp(result, Operand(Smi::FromInt(Isolate::kProtectorValid)));
       DeoptimizeIf(ne, instr, DeoptimizeReason::kHole);
     }
@@ -4595,7 +4559,7 @@ void LCodeGen::DoDeclareGlobals(LDeclareGlobals* instr) {
 
   // TODO(all): if Mov could handle object in new space then it could be used
   // here.
-  __ LoadHeapObject(scratch1, instr->hydrogen()->pairs());
+  __ LoadHeapObject(scratch1, instr->hydrogen()->declarations());
   __ Mov(scratch2, Smi::FromInt(instr->hydrogen()->flags()));
   __ Push(scratch1, scratch2);
   __ LoadHeapObject(scratch1, instr->hydrogen()->feedback_vector());
@@ -5434,20 +5398,6 @@ void LCodeGen::DoTypeofIsAndBranch(LTypeofIsAndBranch* instr) {
     __ Ldrb(scratch, FieldMemOperand(map, Map::kBitFieldOffset));
     EmitTestAndBranch(instr, eq, scratch,
                       (1 << Map::kIsCallable) | (1 << Map::kIsUndetectable));
-
-// clang-format off
-#define SIMD128_TYPE(TYPE, Type, type, lane_count, lane_type)       \
-  } else if (String::Equals(type_name, factory->type##_string())) { \
-    DCHECK((instr->temp1() != NULL) && (instr->temp2() != NULL));   \
-    Register map = ToRegister(instr->temp1());                      \
-                                                                    \
-    __ JumpIfSmi(value, false_label);                               \
-    __ Ldr(map, FieldMemOperand(value, HeapObject::kMapOffset));    \
-    __ CompareRoot(map, Heap::k##Type##MapRootIndex);               \
-    EmitBranch(instr, eq);
-  SIMD128_TYPES(SIMD128_TYPE)
-#undef SIMD128_TYPE
-    // clang-format on
 
   } else {
     __ B(false_label);

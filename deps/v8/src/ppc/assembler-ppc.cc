@@ -66,6 +66,9 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
 #ifndef USE_SIMULATOR
   // Probe for additional features at runtime.
   base::CPU cpu;
+  if (cpu.part() == base::CPU::PPC_POWER9) {
+    supported_ |= (1u << MODULO);
+  }
 #if V8_TARGET_ARCH_PPC64
   if (cpu.part() == base::CPU::PPC_POWER8) {
     supported_ |= (1u << FPR_GPR_MOV);
@@ -79,6 +82,7 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   if (cpu.part() == base::CPU::PPC_POWER7 ||
       cpu.part() == base::CPU::PPC_POWER8) {
     supported_ |= (1u << ISELECT);
+    supported_ |= (1u << VSX);
   }
 #if V8_OS_LINUX
   if (!(cpu.part() == base::CPU::PPC_G5 || cpu.part() == base::CPU::PPC_G4)) {
@@ -96,6 +100,8 @@ void CpuFeatures::ProbeImpl(bool cross_compile) {
   supported_ |= (1u << FPU);
   supported_ |= (1u << LWSYNC);
   supported_ |= (1u << ISELECT);
+  supported_ |= (1u << VSX);
+  supported_ |= (1u << MODULO);
 #if V8_TARGET_ARCH_PPC64
   supported_ |= (1u << FPR_GPR_MOV);
 #endif
@@ -171,15 +177,20 @@ Address RelocInfo::wasm_global_reference() {
   return Assembler::target_address_at(pc_, host_);
 }
 
-
-void RelocInfo::unchecked_update_wasm_memory_reference(
-    Address address, ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate_, pc_, host_, address, flush_mode);
+uint32_t RelocInfo::wasm_function_table_size_reference() {
+  DCHECK(IsWasmFunctionTableSizeReference(rmode_));
+  return static_cast<uint32_t>(
+      reinterpret_cast<intptr_t>(Assembler::target_address_at(pc_, host_)));
 }
 
-void RelocInfo::unchecked_update_wasm_memory_size(uint32_t size,
-                                                  ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate_, pc_, host_,
+void RelocInfo::unchecked_update_wasm_memory_reference(
+    Isolate* isolate, Address address, ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate, pc_, host_, address, flush_mode);
+}
+
+void RelocInfo::unchecked_update_wasm_size(Isolate* isolate, uint32_t size,
+                                           ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate, pc_, host_,
                                    reinterpret_cast<Address>(size), flush_mode);
 }
 
@@ -220,8 +231,8 @@ MemOperand::MemOperand(Register ra, Register rb) {
 // -----------------------------------------------------------------------------
 // Specific instructions, constants, and masks.
 
-Assembler::Assembler(Isolate* isolate, void* buffer, int buffer_size)
-    : AssemblerBase(isolate, buffer, buffer_size),
+Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
+    : AssemblerBase(isolate_data, buffer, buffer_size),
       recorded_ast_id_(TypeFeedbackId::None()),
       constant_pool_builder_(kLoadPtrMaxReachBits, kLoadDoubleMaxReachBits) {
   reloc_info_writer.Reposition(buffer_ + buffer_size_, pc_);
@@ -344,7 +355,7 @@ bool Assembler::Is32BitLoadIntoR12(Instr instr1, Instr instr2) {
 
 bool Assembler::IsCmpRegister(Instr instr) {
   return (((instr & kOpcodeMask) == EXT2) &&
-          ((instr & kExt2OpcodeMask) == CMP));
+          ((EXT2 | (instr & kExt2OpcodeMask)) == CMP));
 }
 
 
@@ -359,7 +370,7 @@ bool Assembler::IsAndi(Instr instr) { return ((instr & kOpcodeMask) == ANDIx); }
 #if V8_TARGET_ARCH_PPC64
 bool Assembler::IsRldicl(Instr instr) {
   return (((instr & kOpcodeMask) == EXT5) &&
-          ((instr & kExt5OpcodeMask) == RLDICL));
+          ((EXT5 | (instr & kExt5OpcodeMask)) == RLDICL));
 }
 #endif
 
@@ -371,7 +382,7 @@ bool Assembler::IsCmpImmediate(Instr instr) {
 
 bool Assembler::IsCrSet(Instr instr) {
   return (((instr & kOpcodeMask) == EXT1) &&
-          ((instr & kExt1OpcodeMask) == CREQV));
+          ((EXT1 | (instr & kExt1OpcodeMask)) == CREQV));
 }
 
 
@@ -414,7 +425,7 @@ enum {
 int Assembler::target_at(int pos) {
   Instr instr = instr_at(pos);
   // check which type of branch this is 16 or 26 bit offset
-  int opcode = instr & kOpcodeMask;
+  uint32_t opcode = instr & kOpcodeMask;
   int link;
   switch (opcode) {
     case BX:
@@ -444,7 +455,7 @@ int Assembler::target_at(int pos) {
 
 void Assembler::target_at_put(int pos, int target_pos, bool* is_branch) {
   Instr instr = instr_at(pos);
-  int opcode = instr & kOpcodeMask;
+  uint32_t opcode = instr & kOpcodeMask;
 
   if (is_branch != nullptr) {
     *is_branch = (opcode == BX || opcode == BCX);
@@ -482,9 +493,9 @@ void Assembler::target_at_put(int pos, int target_pos, bool* is_branch) {
       // pointer in a register.
       Register dst = Register::from_code(instr_at(pos + kInstrSize));
       int32_t offset = target_pos + (Code::kHeaderSize - kHeapObjectTag);
-      CodePatcher patcher(isolate(), reinterpret_cast<byte*>(buffer_ + pos), 2,
-                          CodePatcher::DONT_FLUSH);
-      patcher.masm()->bitwise_mov32(dst, offset);
+      PatchingAssembler patcher(isolate_data(),
+                                reinterpret_cast<byte*>(buffer_ + pos), 2);
+      patcher.bitwise_mov32(dst, offset);
       break;
     }
     case kUnboundAddLabelOffsetOpcode: {
@@ -493,26 +504,27 @@ void Assembler::target_at_put(int pos, int target_pos, bool* is_branch) {
       Register dst = Register::from_code((operands >> 21) & 0x1f);
       Register base = Register::from_code((operands >> 16) & 0x1f);
       int32_t offset = target_pos + SIGN_EXT_IMM16(operands & kImm16Mask);
-      CodePatcher patcher(isolate(), reinterpret_cast<byte*>(buffer_ + pos), 2,
-                          CodePatcher::DONT_FLUSH);
-      patcher.masm()->bitwise_add32(dst, base, offset);
+      PatchingAssembler patcher(isolate_data(),
+                                reinterpret_cast<byte*>(buffer_ + pos), 2);
+      patcher.bitwise_add32(dst, base, offset);
       break;
     }
     case kUnboundMovLabelAddrOpcode: {
       // Load the address of the label in a register.
       Register dst = Register::from_code(instr_at(pos + kInstrSize));
-      CodePatcher patcher(isolate(), reinterpret_cast<byte*>(buffer_ + pos),
-                          kMovInstructionsNoConstantPool,
-                          CodePatcher::DONT_FLUSH);
+      PatchingAssembler patcher(isolate_data(),
+                                reinterpret_cast<byte*>(buffer_ + pos),
+                                kMovInstructionsNoConstantPool);
       // Keep internal references relative until EmitRelocations.
-      patcher.masm()->bitwise_mov(dst, target_pos);
+      patcher.bitwise_mov(dst, target_pos);
       break;
     }
     case kUnboundJumpTableEntryOpcode: {
-      CodePatcher patcher(isolate(), reinterpret_cast<byte*>(buffer_ + pos),
-                          kPointerSize / kInstrSize, CodePatcher::DONT_FLUSH);
+      PatchingAssembler patcher(isolate_data(),
+                                reinterpret_cast<byte*>(buffer_ + pos),
+                                kPointerSize / kInstrSize);
       // Keep internal references relative until EmitRelocations.
-      patcher.masm()->dp(target_pos);
+      patcher.dp(target_pos);
       break;
     }
     default:
@@ -524,7 +536,7 @@ void Assembler::target_at_put(int pos, int target_pos, bool* is_branch) {
 
 int Assembler::max_reach_from(int pos) {
   Instr instr = instr_at(pos);
-  int opcode = instr & kOpcodeMask;
+  uint32_t opcode = instr & kOpcodeMask;
 
   // check which type of branch this is 16 or 26 bit offset
   switch (opcode) {
@@ -635,12 +647,10 @@ void Assembler::x_form(Instr instr, Register ra, Register rs, Register rb,
   emit(instr | rs.code() * B21 | ra.code() * B16 | rb.code() * B11 | r);
 }
 
-
 void Assembler::xo_form(Instr instr, Register rt, Register ra, Register rb,
                         OEBit o, RCBit r) {
   emit(instr | rt.code() * B21 | ra.code() * B16 | rb.code() * B11 | o | r);
 }
-
 
 void Assembler::md_form(Instr instr, Register ra, Register rs, int shift,
                         int maskbit, RCBit r) {
@@ -936,6 +946,13 @@ void Assembler::divwu(Register dst, Register src1, Register src2, OEBit o,
   xo_form(EXT2 | DIVWU, dst, src1, src2, o, r);
 }
 
+void Assembler::modsw(Register rt, Register ra, Register rb) {
+  x_form(EXT2 | MODSW, ra, rt, rb, LeaveRC);
+}
+
+void Assembler::moduw(Register rt, Register ra, Register rb) {
+  x_form(EXT2 | MODUW, ra, rt, rb, LeaveRC);
+}
 
 void Assembler::addi(Register dst, Register src, const Operand& imm) {
   DCHECK(!src.is(r0));  // use li instead to show intent
@@ -1539,6 +1556,14 @@ void Assembler::divd(Register dst, Register src1, Register src2, OEBit o,
 void Assembler::divdu(Register dst, Register src1, Register src2, OEBit o,
                       RCBit r) {
   xo_form(EXT2 | DIVDU, dst, src1, src2, o, r);
+}
+
+void Assembler::modsd(Register rt, Register ra, Register rb) {
+  x_form(EXT2 | MODSD, ra, rt, rb, LeaveRC);
+}
+
+void Assembler::modud(Register rt, Register ra, Register rb) {
+  x_form(EXT2 | MODUD, ra, rt, rb, LeaveRC);
 }
 #endif
 
@@ -2217,13 +2242,13 @@ void Assembler::fcfidu(const DoubleRegister frt, const DoubleRegister frb,
 
 void Assembler::fcfidus(const DoubleRegister frt, const DoubleRegister frb,
                         RCBit rc) {
-  emit(EXT3 | FCFIDU | frt.code() * B21 | frb.code() * B11 | rc);
+  emit(EXT3 | FCFIDUS | frt.code() * B21 | frb.code() * B11 | rc);
 }
 
 
 void Assembler::fcfids(const DoubleRegister frt, const DoubleRegister frb,
                        RCBit rc) {
-  emit(EXT3 | FCFID | frt.code() * B21 | frb.code() * B11 | rc);
+  emit(EXT3 | FCFIDS | frt.code() * B21 | frb.code() * B11 | rc);
 }
 
 
@@ -2321,7 +2346,6 @@ void Assembler::fmsub(const DoubleRegister frt, const DoubleRegister fra,
   emit(EXT4 | FMSUB | frt.code() * B21 | fra.code() * B16 | frb.code() * B11 |
        frc.code() * B6 | rc);
 }
-
 
 // Pseudo instructions.
 void Assembler::nop(int type) {
@@ -2462,7 +2486,7 @@ void Assembler::EmitRelocations() {
     RelocInfo::Mode rmode = it->rmode();
     Address pc = buffer_ + it->position();
     Code* code = NULL;
-    RelocInfo rinfo(isolate(), pc, rmode, it->data(), code);
+    RelocInfo rinfo(pc, rmode, it->data(), code);
 
     // Fix up internal references now that they are guaranteed to be bound.
     if (RelocInfo::IsInternalReference(rmode)) {
@@ -2472,7 +2496,7 @@ void Assembler::EmitRelocations() {
     } else if (RelocInfo::IsInternalReferenceEncoded(rmode)) {
       // mov sequence
       intptr_t pos = reinterpret_cast<intptr_t>(target_address_at(pc, code));
-      set_target_address_at(isolate(), pc, code, buffer_ + pos,
+      set_target_address_at(nullptr, pc, code, buffer_ + pos,
                             SKIP_ICACHE_FLUSH);
     }
 
@@ -2517,6 +2541,21 @@ void Assembler::CheckTrampolinePool() {
   }
 }
 
+PatchingAssembler::PatchingAssembler(IsolateData isolate_data, byte* address,
+                                     int instructions)
+    : Assembler(isolate_data, address, instructions * kInstrSize + kGap) {
+  DCHECK_EQ(reloc_info_writer.pos(), buffer_ + buffer_size_);
+}
+
+PatchingAssembler::~PatchingAssembler() {
+  // Check that the code was patched as expected.
+  DCHECK_EQ(pc_, buffer_ + buffer_size_ - kGap);
+  DCHECK_EQ(reloc_info_writer.pos(), buffer_ + buffer_size_);
+}
+
+void PatchingAssembler::FlushICache(Isolate* isolate) {
+  Assembler::FlushICache(isolate, buffer_, buffer_size_ - kGap);
+}
 
 }  // namespace internal
 }  // namespace v8

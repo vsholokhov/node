@@ -123,8 +123,23 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Lea:
     case kX64Dec32:
     case kX64Inc32:
-    case kX64Int32x4Create:
+    case kX64Int32x4Splat:
     case kX64Int32x4ExtractLane:
+    case kX64Int32x4ReplaceLane:
+    case kX64Int32x4Add:
+    case kX64Int32x4Sub:
+    case kX64Int32x4Mul:
+    case kX64Int32x4Min:
+    case kX64Int32x4Max:
+    case kX64Int32x4Equal:
+    case kX64Int32x4NotEqual:
+    case kX64Int32x4ShiftLeftByScalar:
+    case kX64Int32x4ShiftRightByScalar:
+    case kX64Uint32x4ShiftRightByScalar:
+    case kX64Uint32x4Min:
+    case kX64Uint32x4Max:
+    case kX64Simd32x4Select:
+    case kX64Simd128Zero:
       return (instr->addressing_mode() == kMode_None)
           ? kNoOpcodeFlags
           : kIsLoadOperation | kHasSideEffect;
@@ -155,7 +170,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
       return kHasSideEffect;
 
     case kX64Movl:
-    case kX64TrapMovl:
       if (instr->HasOutput()) {
         DCHECK(instr->InputCount() >= 1);
         return instr->InputAt(0)->IsRegister() ? kNoOpcodeFlags
@@ -175,11 +189,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kX64Push:
     case kX64Poke:
       return kHasSideEffect;
-
-    case kX64Xchgb:
-    case kX64Xchgw:
-    case kX64Xchgl:
-      return kIsLoadOperation | kHasSideEffect;
 
 #define CASE(Name) case k##Name:
     COMMON_ARCH_OPCODE_LIST(CASE)

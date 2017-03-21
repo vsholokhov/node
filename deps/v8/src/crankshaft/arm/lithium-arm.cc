@@ -9,6 +9,7 @@
 #include "src/crankshaft/arm/lithium-codegen-arm.h"
 #include "src/crankshaft/hydrogen-osr.h"
 #include "src/crankshaft/lithium-inl.h"
+#include "src/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -204,16 +205,6 @@ void LHasInstanceTypeAndBranch::PrintDataTo(StringStream* stream) {
   value()->PrintTo(stream);
   stream->Add(") then B%d else B%d", true_block_id(), false_block_id());
 }
-
-void LClassOfTestAndBranch::PrintDataTo(StringStream* stream) {
-  stream->Add("if class_of_test(");
-  value()->PrintTo(stream);
-  stream->Add(", \"%o\") then B%d else B%d",
-              *hydrogen()->class_name(),
-              true_block_id(),
-              false_block_id());
-}
-
 
 void LTypeofIsAndBranch::PrintDataTo(StringStream* stream) {
   stream->Add("if typeof ");
@@ -1716,14 +1707,6 @@ LInstruction* LChunkBuilder::DoHasInstanceTypeAndBranch(
   LOperand* value = UseRegisterAtStart(instr->value());
   return new(zone()) LHasInstanceTypeAndBranch(value);
 }
-
-LInstruction* LChunkBuilder::DoClassOfTestAndBranch(
-    HClassOfTestAndBranch* instr) {
-  DCHECK(instr->value()->representation().IsTagged());
-  LOperand* value = UseRegister(instr->value());
-  return new(zone()) LClassOfTestAndBranch(value, TempRegister());
-}
-
 
 LInstruction* LChunkBuilder::DoSeqStringGetChar(HSeqStringGetChar* instr) {
   LOperand* string = UseRegisterAtStart(instr->string());

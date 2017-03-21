@@ -204,14 +204,19 @@ uint32_t RelocInfo::wasm_memory_size_reference() {
   return reinterpret_cast<uint32_t>(Assembler::target_address_at(pc_, host_));
 }
 
-void RelocInfo::unchecked_update_wasm_memory_reference(
-    Address address, ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate_, pc_, host_, address, flush_mode);
+uint32_t RelocInfo::wasm_function_table_size_reference() {
+  DCHECK(IsWasmFunctionTableSizeReference(rmode_));
+  return reinterpret_cast<uint32_t>(Assembler::target_address_at(pc_, host_));
 }
 
-void RelocInfo::unchecked_update_wasm_memory_size(uint32_t size,
-                                                  ICacheFlushMode flush_mode) {
-  Assembler::set_target_address_at(isolate_, pc_, host_,
+void RelocInfo::unchecked_update_wasm_memory_reference(
+    Isolate* isolate, Address address, ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate, pc_, host_, address, flush_mode);
+}
+
+void RelocInfo::unchecked_update_wasm_size(Isolate* isolate, uint32_t size,
+                                           ICacheFlushMode flush_mode) {
+  Assembler::set_target_address_at(isolate, pc_, host_,
                                    reinterpret_cast<Address>(size), flush_mode);
 }
 
@@ -283,8 +288,8 @@ const Instr kLwSwInstrTypeMask = 0xffe00000;
 const Instr kLwSwInstrArgumentMask  = ~kLwSwInstrTypeMask;
 const Instr kLwSwOffsetMask = kImm16Mask;
 
-Assembler::Assembler(Isolate* isolate, void* buffer, int buffer_size)
-    : AssemblerBase(isolate, buffer, buffer_size),
+Assembler::Assembler(IsolateData isolate_data, void* buffer, int buffer_size)
+    : AssemblerBase(isolate_data, buffer, buffer_size),
       recorded_ast_id_(TypeFeedbackId::None()) {
   reloc_info_writer.Reposition(buffer_ + buffer_size_, pc_);
 
@@ -895,8 +900,7 @@ void Assembler::print(Label* L) {
       } else {
         PrintF("%d\n", instr);
       }
-      next(&l, internal_reference_positions_.find(l.pos()) !=
-                   internal_reference_positions_.end());
+      next(&l, is_internal_reference(&l));
     }
   } else {
     PrintF("label in inconsistent state (pos = %d)\n", L->pos_);
@@ -910,14 +914,15 @@ void Assembler::bind_to(Label* L, int pos) {
   bool is_internal = false;
   if (L->is_linked() && !trampoline_emitted_) {
     unbound_labels_count_--;
-    next_buffer_check_ += kTrampolineSlotsSize;
+    if (!is_internal_reference(L)) {
+      next_buffer_check_ += kTrampolineSlotsSize;
+    }
   }
 
   while (L->is_linked()) {
     int32_t fixup_pos = L->pos();
     int32_t dist = pos - fixup_pos;
-    is_internal = internal_reference_positions_.find(fixup_pos) !=
-                  internal_reference_positions_.end();
+    is_internal = is_internal_reference(L);
     next(L, is_internal);  // Call next before overwriting link with target at
                            // fixup_pos.
     Instr instr = instr_at(fixup_pos);
@@ -934,7 +939,6 @@ void Assembler::bind_to(Label* L, int pos) {
           CHECK((trampoline_pos - fixup_pos) <= branch_offset);
           target_at_put(fixup_pos, trampoline_pos, false);
           fixup_pos = trampoline_pos;
-          dist = pos - fixup_pos;
         }
         target_at_put(fixup_pos, pos, false);
       } else {
@@ -1779,9 +1783,18 @@ void Assembler::lsa(Register rd, Register rt, Register rs, uint8_t sa) {
 // Helper for base-reg + offset, when offset is larger than int16.
 void Assembler::LoadRegPlusOffsetToAt(const MemOperand& src) {
   DCHECK(!src.rm().is(at));
-  lui(at, (src.offset_ >> kLuiShift) & kImm16Mask);
-  ori(at, at, src.offset_ & kImm16Mask);  // Load 32-bit offset.
-  addu(at, at, src.rm());  // Add base register.
+  if (IsMipsArchVariant(kMips32r6)) {
+    int32_t hi = (src.offset_ >> kLuiShift) & kImm16Mask;
+    if (src.offset_ & kNegOffset) {
+      hi += 1;
+    }
+    aui(at, src.rm(), hi);
+    addiu(at, at, src.offset_ & kImm16Mask);
+  } else {
+    lui(at, (src.offset_ >> kLuiShift) & kImm16Mask);
+    ori(at, at, src.offset_ & kImm16Mask);  // Load 32-bit offset.
+    addu(at, at, src.rm());                 // Add base register.
+  }
 }
 
 // Helper for base-reg + upper part of offset, when offset is larger than int16.
@@ -1797,8 +1810,13 @@ int32_t Assembler::LoadRegPlusUpperOffsetPartToAt(const MemOperand& src) {
   if (src.offset_ & kNegOffset) {
     hi += 1;
   }
-  lui(at, hi);
-  addu(at, at, src.rm());
+
+  if (IsMipsArchVariant(kMips32r6)) {
+    aui(at, src.rm(), hi);
+  } else {
+    lui(at, hi);
+    addu(at, at, src.rm());
+  }
   return (src.offset_ & kImm16Mask);
 }
 
@@ -2001,15 +2019,7 @@ void Assembler::stop(const char* msg, uint32_t code) {
 #if V8_HOST_ARCH_MIPS
   break_(0x54321);
 #else  // V8_HOST_ARCH_MIPS
-  BlockTrampolinePoolFor(2);
-  // The Simulator will handle the stop instruction and get the message address.
-  // On MIPS stop() is just a special kind of break_().
   break_(code, true);
-  // Do not embed the message string address! We used to do this, but that
-  // made snapshots created from position-independent executable builds
-  // non-deterministic.
-  // TODO(yangguo): remove this field entirely.
-  nop();
 #endif
 }
 
@@ -3073,7 +3083,7 @@ void Assembler::dd(Label* label) {
 
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   // We do not try to reuse pool constants.
-  RelocInfo rinfo(isolate(), pc_, rmode, data, NULL);
+  RelocInfo rinfo(pc_, rmode, data, NULL);
   if (rmode >= RelocInfo::COMMENT &&
       rmode <= RelocInfo::DEBUG_BREAK_SLOT_AT_TAIL_CALL) {
     // Adjust code for new modes.
@@ -3088,8 +3098,8 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
     }
     DCHECK(buffer_space() >= kMaxRelocSize);  // Too late to grow buffer here.
     if (rmode == RelocInfo::CODE_TARGET_WITH_ID) {
-      RelocInfo reloc_info_with_ast_id(isolate(), pc_, rmode,
-                                       RecordedAstId().ToInt(), NULL);
+      RelocInfo reloc_info_with_ast_id(pc_, rmode, RecordedAstId().ToInt(),
+                                       NULL);
       ClearRecordedAstId();
       reloc_info_writer.Write(&reloc_info_with_ast_id);
     } else {
@@ -3227,6 +3237,8 @@ void Assembler::QuietNaN(HeapObject* object) {
 void Assembler::set_target_address_at(Isolate* isolate, Address pc,
                                       Address target,
                                       ICacheFlushMode icache_flush_mode) {
+  DCHECK_IMPLIES(isolate == nullptr, icache_flush_mode == SKIP_ICACHE_FLUSH);
+
   Instr instr2 = instr_at(pc + kInstrSize);
   uint32_t rt_code = GetRtField(instr2);
   uint32_t* p = reinterpret_cast<uint32_t*>(pc);
