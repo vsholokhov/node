@@ -1093,6 +1093,12 @@ void BytecodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
   builder()->SetStatementPosition(stmt);
   VisitForAccumulatorValue(stmt->expression());
 
+  if (stmt->HasTypeProfileSlot()) {
+    FeedbackSlot collect_type_feedback_slot = stmt->TypeProfileSlot();
+    builder()->CollectTypeProfile(stmt->position(),
+                                  feedback_index(collect_type_feedback_slot));
+  }
+
   if (stmt->is_async_return()) {
     execution_control()->AsyncReturnAccumulator();
   } else {
@@ -1668,7 +1674,7 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   // Deep-copy the literal boilerplate.
   uint8_t flags = CreateObjectLiteralFlags::Encode(
       expr->IsFastCloningSupported(),
-      ConstructorBuiltinsAssembler::FastCloneShallowObjectPropertiesCount(
+      ConstructorBuiltins::FastCloneShallowObjectPropertiesCount(
           expr->properties_count()),
       expr->ComputeFlags());
 
@@ -2211,34 +2217,18 @@ void BytecodeGenerator::VisitAssignment(Assignment* expr) {
   LhsKind assign_type = Property::GetAssignType(property);
 
   // Evaluate LHS expression.
-  Register lhs_name;
-  if (expr->HasTypeProfileSlot()) {
-    lhs_name = register_allocator()->NewRegister();
-  }
-
   switch (assign_type) {
     case VARIABLE:
-      if (expr->HasTypeProfileSlot()) {
-        builder()
-            ->LoadLiteral(expr->target()->AsVariableProxy()->var()->raw_name())
-            .StoreAccumulatorInRegister(lhs_name);
-      }
       // Nothing to do to evaluate variable assignment LHS.
       break;
     case NAMED_PROPERTY: {
       object = VisitForRegisterValue(property->obj());
       name = property->key()->AsLiteral()->AsRawPropertyName();
-      if (expr->HasTypeProfileSlot()) {
-        builder()->LoadLiteral(name).StoreAccumulatorInRegister(lhs_name);
-      }
       break;
     }
     case KEYED_PROPERTY: {
       object = VisitForRegisterValue(property->obj());
       key = VisitForRegisterValue(property->key());
-      if (expr->HasTypeProfileSlot()) {
-        builder()->StoreAccumulatorInRegister(lhs_name);
-      }
       break;
     }
     case NAMED_SUPER_PROPERTY: {
@@ -2251,9 +2241,6 @@ void BytecodeGenerator::VisitAssignment(Assignment* expr) {
       builder()
           ->LoadLiteral(property->key()->AsLiteral()->AsRawPropertyName())
           .StoreAccumulatorInRegister(super_property_args[2]);
-      if (expr->HasTypeProfileSlot()) {
-        builder()->StoreAccumulatorInRegister(lhs_name);
-      }
       break;
     }
     case KEYED_SUPER_PROPERTY: {
@@ -2264,10 +2251,6 @@ void BytecodeGenerator::VisitAssignment(Assignment* expr) {
       VisitForRegisterValue(super_property->home_object(),
                             super_property_args[1]);
       VisitForRegisterValue(property->key(), super_property_args[2]);
-      if (expr->HasTypeProfileSlot()) {
-        builder()->StoreAccumulatorInRegister(lhs_name);
-      }
-
       break;
     }
   }
@@ -2358,10 +2341,12 @@ void BytecodeGenerator::VisitAssignment(Assignment* expr) {
   }
 
   // Value is in accumulator.
-  if (expr->HasTypeProfileSlot()) {
+  // TODO(franzih): Collect type profile once we can handle more than just
+  // return statements.
+  if (false && expr->HasTypeProfileSlot()) {
     FeedbackSlot collect_type_feedback_slot = expr->TypeProfileSlot();
 
-    builder()->CollectTypeProfile(lhs_name,
+    builder()->CollectTypeProfile(expr->position(),
                                   feedback_index(collect_type_feedback_slot));
   }
 }
@@ -3227,8 +3212,7 @@ void BytecodeGenerator::BuildNewLocalActivationContext() {
   } else {
     DCHECK(scope->is_function_scope() || scope->is_eval_scope());
     int slot_count = scope->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
-    if (slot_count <=
-        ConstructorBuiltinsAssembler::MaximumFunctionContextSlots()) {
+    if (slot_count <= ConstructorBuiltins::MaximumFunctionContextSlots()) {
       switch (scope->scope_type()) {
         case EVAL_SCOPE:
           builder()->CreateEvalContext(slot_count);

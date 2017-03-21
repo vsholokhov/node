@@ -250,7 +250,9 @@ Handle<FeedbackVector> FeedbackVector::New(Isolate* isolate,
   }
 
   Handle<FeedbackVector> result = Handle<FeedbackVector>::cast(array);
-  if (isolate->IsCodeCoverageEnabled()) AddToCodeCoverageList(isolate, result);
+  if (!isolate->is_best_effort_code_coverage()) {
+    AddToCodeCoverageList(isolate, result);
+  }
   return result;
 }
 
@@ -260,14 +262,16 @@ Handle<FeedbackVector> FeedbackVector::Copy(Isolate* isolate,
   Handle<FeedbackVector> result;
   result = Handle<FeedbackVector>::cast(
       isolate->factory()->CopyFixedArray(Handle<FixedArray>::cast(vector)));
-  if (isolate->IsCodeCoverageEnabled()) AddToCodeCoverageList(isolate, result);
+  if (!isolate->is_best_effort_code_coverage()) {
+    AddToCodeCoverageList(isolate, result);
+  }
   return result;
 }
 
 // static
 void FeedbackVector::AddToCodeCoverageList(Isolate* isolate,
                                            Handle<FeedbackVector> vector) {
-  DCHECK(isolate->IsCodeCoverageEnabled());
+  DCHECK(!isolate->is_best_effort_code_coverage());
   if (!vector->shared_function_info()->IsSubjectToDebugging()) return;
   Handle<ArrayList> list =
       Handle<ArrayList>::cast(isolate->factory()->code_coverage_list());
@@ -1049,7 +1053,7 @@ InlineCacheState CollectTypeProfileNexus::StateFromFeedback() const {
   return MONOMORPHIC;
 }
 
-void CollectTypeProfileNexus::Collect(Handle<Name> type) {
+void CollectTypeProfileNexus::Collect(Handle<Name> type, int position) {
   Isolate* isolate = GetIsolate();
 
   Object* const feedback = GetFeedback();
@@ -1060,9 +1064,13 @@ void CollectTypeProfileNexus::Collect(Handle<Name> type) {
   } else {
     types = Handle<ArrayList>(ArrayList::cast(feedback), isolate);
   }
+
+  Handle<Tuple2> entry = isolate->factory()->NewTuple2(
+      type, Handle<Smi>(Smi::FromInt(position), isolate));
+
   // TODO(franzih): Somehow sort this list. Either avoid duplicates
   // or use the common base type.
-  SetFeedback(*ArrayList::Add(types, type));
+  SetFeedback(*ArrayList::Add(types, entry));
 }
 
 void CollectTypeProfileNexus::Print() const {
@@ -1078,8 +1086,13 @@ void CollectTypeProfileNexus::Print() const {
   list = Handle<ArrayList>(ArrayList::cast(feedback), isolate);
 
   for (int i = 0; i < list->Length(); i++) {
-    String* name = String::cast(list->Get(i));
-    PrintF("%s\n", name->ToCString().get());
+    Handle<Object> maybe_entry = Handle<Object>(list->Get(i), isolate);
+    DCHECK(maybe_entry->IsTuple2());
+    Handle<Tuple2> entry = Handle<Tuple2>::cast(maybe_entry);
+    Handle<String> type =
+        Handle<String>(String::cast(entry->value1()), isolate);
+    int position = Smi::cast(entry->value2())->value();
+    PrintF("%d: %s\n", position, type->ToCString().get());
   }
 }
 

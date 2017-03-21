@@ -299,7 +299,6 @@ class FeedbackVector : public FixedArray {
   inline FeedbackMetadata* metadata() const;
   inline SharedFunctionInfo* shared_function_info() const;
   inline int invocation_count() const;
-  inline void increment_invocation_count();
   inline void clear_invocation_count();
 
   // Conversion from a slot to an integer index to the underlying array.
@@ -765,7 +764,7 @@ class CollectTypeProfileNexus : public FeedbackNexus {
   }
 
   // Add a type to the list of types.
-  void Collect(Handle<Name> type);
+  void Collect(Handle<Name> type, int position);
 
   // Dump the types to stdout.
   // TODO(franzih): pass this information to the debugger protocol instead of
