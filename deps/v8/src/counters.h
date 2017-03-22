@@ -486,21 +486,29 @@ double AggregatedMemoryHistogram<Histogram>::Aggregate(double current_ms,
 
 class RuntimeCallCounter final {
  public:
-  explicit RuntimeCallCounter(const char* name) : name_(name) {}
+  explicit RuntimeCallCounter(const char* name)
+      : name_(name), count_(0), time_(0) {}
   V8_NOINLINE void Reset();
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
   void Add(RuntimeCallCounter* other);
 
   const char* name() const { return name_; }
   int64_t count() const { return count_; }
-  base::TimeDelta time() const { return time_; }
+  base::TimeDelta time() const {
+    return base::TimeDelta::FromMicroseconds(time_);
+  }
   void Increment() { count_++; }
-  void Add(base::TimeDelta delta) { time_ += delta; }
+  void Add(base::TimeDelta delta) { time_ += delta.InMicroseconds(); }
 
  private:
+  RuntimeCallCounter() {}
+
   const char* name_;
-  int64_t count_ = 0;
-  base::TimeDelta time_;
+  int64_t count_;
+  // Stored as int64_t so that its initialization can be deferred.
+  int64_t time_;
+
+  friend class RuntimeCallStats;
 };
 
 // RuntimeCallTimer is used to keep track of the stack of currently active
@@ -754,7 +762,6 @@ class RuntimeCallTimer final {
   V(UnexpectedStubMiss)
 
 #define FOR_EACH_HANDLER_COUNTER(V)              \
-  V(IC_HandlerCacheHit)                          \
   V(KeyedLoadIC_LoadIndexedStringStub)           \
   V(KeyedLoadIC_LoadIndexedInterceptorStub)      \
   V(KeyedLoadIC_KeyedLoadSloppyArgumentsStub)    \
@@ -766,32 +773,20 @@ class RuntimeCallTimer final {
   V(KeyedStoreIC_StoreFastElementStub)           \
   V(KeyedStoreIC_StoreElementStub)               \
   V(LoadIC_FunctionPrototypeStub)                \
-  V(LoadIC_HandlerCacheHit_AccessCheck)          \
-  V(LoadIC_HandlerCacheHit_Exotic)               \
-  V(LoadIC_HandlerCacheHit_Interceptor)          \
-  V(LoadIC_HandlerCacheHit_JSProxy)              \
-  V(LoadIC_HandlerCacheHit_NonExistent)          \
   V(LoadIC_HandlerCacheHit_Accessor)             \
-  V(LoadIC_HandlerCacheHit_Data)                 \
-  V(LoadIC_HandlerCacheHit_Transition)           \
   V(LoadIC_LoadApiGetterDH)                      \
   V(LoadIC_LoadApiGetterFromPrototypeDH)         \
-  V(LoadIC_LoadApiGetterStub)                    \
   V(LoadIC_LoadCallback)                         \
   V(LoadIC_LoadConstantDH)                       \
   V(LoadIC_LoadConstantFromPrototypeDH)          \
-  V(LoadIC_LoadConstant)                         \
-  V(LoadIC_LoadConstantStub)                     \
   V(LoadIC_LoadFieldDH)                          \
   V(LoadIC_LoadFieldFromPrototypeDH)             \
-  V(LoadIC_LoadField)                            \
   V(LoadIC_LoadGlobalFromPrototypeDH)            \
   V(LoadIC_LoadIntegerIndexedExoticDH)           \
   V(LoadIC_LoadInterceptorDH)                    \
   V(LoadIC_LoadNonMaskingInterceptorDH)          \
   V(LoadIC_LoadInterceptorFromPrototypeDH)       \
   V(LoadIC_LoadNonexistentDH)                    \
-  V(LoadIC_LoadNonexistent)                      \
   V(LoadIC_LoadNormalDH)                         \
   V(LoadIC_LoadNormalFromPrototypeDH)            \
   V(LoadIC_LoadScriptContextFieldStub)           \
@@ -800,52 +795,39 @@ class RuntimeCallTimer final {
   V(LoadIC_Premonomorphic)                       \
   V(LoadIC_SlowStub)                             \
   V(LoadIC_StringLengthStub)                     \
-  V(StoreIC_HandlerCacheHit_AccessCheck)         \
-  V(StoreIC_HandlerCacheHit_Exotic)              \
-  V(StoreIC_HandlerCacheHit_Interceptor)         \
-  V(StoreIC_HandlerCacheHit_JSProxy)             \
-  V(StoreIC_HandlerCacheHit_NonExistent)         \
   V(StoreIC_HandlerCacheHit_Accessor)            \
-  V(StoreIC_HandlerCacheHit_Data)                \
-  V(StoreIC_HandlerCacheHit_Transition)          \
   V(StoreIC_NonReceiver)                         \
   V(StoreIC_Premonomorphic)                      \
   V(StoreIC_SlowStub)                            \
   V(StoreIC_StoreCallback)                       \
-  V(StoreIC_StoreField)                          \
   V(StoreIC_StoreFieldDH)                        \
-  V(StoreIC_StoreFieldStub)                      \
   V(StoreIC_StoreGlobalDH)                       \
   V(StoreIC_StoreGlobalTransitionDH)             \
   V(StoreIC_StoreInterceptorStub)                \
   V(StoreIC_StoreNormalDH)                       \
   V(StoreIC_StoreScriptContextFieldStub)         \
-  V(StoreIC_StoreTransition)                     \
   V(StoreIC_StoreTransitionDH)                   \
   V(StoreIC_StoreViaSetter)
 
 class RuntimeCallStats final : public ZoneObject {
  public:
   typedef RuntimeCallCounter RuntimeCallStats::*CounterId;
+  V8_EXPORT_PRIVATE RuntimeCallStats();
 
-#define CALL_RUNTIME_COUNTER(name) \
-  RuntimeCallCounter name = RuntimeCallCounter(#name);
+#define CALL_RUNTIME_COUNTER(name) RuntimeCallCounter name;
   FOR_EACH_MANUAL_COUNTER(CALL_RUNTIME_COUNTER)
 #undef CALL_RUNTIME_COUNTER
 #define CALL_RUNTIME_COUNTER(name, nargs, ressize) \
-  RuntimeCallCounter Runtime_##name = RuntimeCallCounter(#name);
+  RuntimeCallCounter Runtime_##name;
   FOR_EACH_INTRINSIC(CALL_RUNTIME_COUNTER)
 #undef CALL_RUNTIME_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter Builtin_##name = RuntimeCallCounter(#name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter Builtin_##name;
   BUILTIN_LIST_C(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter API_##name = RuntimeCallCounter("API_" #name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter API_##name;
   FOR_EACH_API_COUNTER(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter Handler_##name = RuntimeCallCounter(#name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter Handler_##name;
   FOR_EACH_HANDLER_COUNTER(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
 
@@ -874,11 +856,6 @@ class RuntimeCallStats final : public ZoneObject {
   void Add(RuntimeCallStats* other);
   V8_EXPORT_PRIVATE void Print(std::ostream& os);
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
-
-  RuntimeCallStats() {
-    Reset();
-    in_use_ = false;
-  }
 
   RuntimeCallTimer* current_timer() { return current_timer_.Value(); }
   bool InUse() { return in_use_; }

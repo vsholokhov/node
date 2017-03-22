@@ -222,7 +222,7 @@ class Isolate;
   TFS(ToLength, BUILTIN, kNoExtraICState, TypeConversion, 1)                   \
   TFS(ClassOf, BUILTIN, kNoExtraICState, Typeof, 1)                            \
   TFS(Typeof, BUILTIN, kNoExtraICState, Typeof, 1)                             \
-  TFS(GetSuperConstructor, BUILTIN, kNoExtraICState, TypeConversion, 1)        \
+  TFS(GetSuperConstructor, BUILTIN, kNoExtraICState, Typeof, 1)                \
                                                                                \
   /* Handlers */                                                               \
   TFS(LoadICProtoArray, BUILTIN, kNoExtraICState, LoadICProtoArray, 1)         \
@@ -653,7 +653,7 @@ class Isolate;
   CPP(ObjectGetPrototypeOf)                                                    \
   CPP(ObjectSetPrototypeOf)                                                    \
   /* ES6 #sec-object.prototype.hasownproperty */                               \
-  TFJ(ObjectHasOwnProperty, 1)                                                 \
+  TFJ(ObjectHasOwnProperty, 1, kKey)                                           \
   CPP(ObjectIs)                                                                \
   CPP(ObjectIsExtensible)                                                      \
   CPP(ObjectIsFrozen)                                                          \

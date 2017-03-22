@@ -494,7 +494,7 @@ void AllocateHeapNumberStub::GenerateAssembly(
 void StringLengthStub::GenerateAssembly(
     compiler::CodeAssemblerState* state) const {
   CodeStubAssembler assembler(state);
-  compiler::Node* value = assembler.Parameter(0);
+  compiler::Node* value = assembler.Parameter(Descriptor::kReceiver);
   compiler::Node* string = assembler.LoadJSValueValue(value);
   compiler::Node* result = assembler.LoadStringLength(string);
   assembler.Return(result);
@@ -502,7 +502,6 @@ void StringLengthStub::GenerateAssembly(
 
 #define BINARY_OP_STUB(Name)                                                  \
   void Name::GenerateAssembly(compiler::CodeAssemblerState* state) const {    \
-    typedef BinaryOpWithVectorDescriptor Descriptor;                          \
     CodeStubAssembler assembler(state);                                       \
     assembler.Return(Generate(                                                \
         &assembler, assembler.Parameter(Descriptor::kLeft),                   \
@@ -1857,9 +1856,9 @@ void GetPropertyStub::GenerateAssembly(
   Label call_runtime(&assembler, Label::kDeferred),
       return_undefined(&assembler), end(&assembler);
 
-  Node* object = assembler.Parameter(0);
-  Node* key = assembler.Parameter(1);
-  Node* context = assembler.Parameter(2);
+  Node* object = assembler.Parameter(Descriptor::kObject);
+  Node* key = assembler.Parameter(Descriptor::kKey);
+  Node* context = assembler.Parameter(Descriptor::kContext);
   Variable var_result(&assembler, MachineRepresentation::kTagged);
 
   CodeStubAssembler::LookupInHolder lookup_property_in_holder =

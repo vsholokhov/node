@@ -817,7 +817,7 @@ void BytecodeGenerator::VisitIterationHeader(IterationStatement* stmt,
     BytecodeLabel not_resuming;
     builder()
         ->LoadLiteral(Smi::FromInt(JSGeneratorObject::kGeneratorExecuting))
-        .CompareOperation(Token::Value::EQ, generator_state_)
+        .CompareOperation(Token::Value::EQ_STRICT, generator_state_)
         .JumpIfTrue(&not_resuming);
     BuildIndexedJump(generator_state_, first_yield,
         stmt->yield_count(), generator_resume_points_);
@@ -1092,13 +1092,6 @@ void BytecodeGenerator::VisitBreakStatement(BreakStatement* stmt) {
 void BytecodeGenerator::VisitReturnStatement(ReturnStatement* stmt) {
   builder()->SetStatementPosition(stmt);
   VisitForAccumulatorValue(stmt->expression());
-
-  if (stmt->HasTypeProfileSlot()) {
-    FeedbackSlot collect_type_feedback_slot = stmt->TypeProfileSlot();
-    builder()->CollectTypeProfile(stmt->position(),
-                                  feedback_index(collect_type_feedback_slot));
-  }
-
   if (stmt->is_async_return()) {
     execution_control()->AsyncReturnAccumulator();
   } else {
@@ -2030,6 +2023,11 @@ void BytecodeGenerator::BuildReturn() {
     builder()->StoreAccumulatorInRegister(result).CallRuntime(
         Runtime::kTraceExit, result);
   }
+  if (!info()->literal()->TypeProfileSlot().IsInvalid()) {
+    builder()->CollectTypeProfile(
+        info()->literal()->position(),
+        feedback_index(info()->literal()->TypeProfileSlot()));
+  }
   builder()->Return();
 }
 
@@ -2338,16 +2336,6 @@ void BytecodeGenerator::VisitAssignment(Assignment* expr) {
           .CallRuntime(StoreKeyedToSuperRuntimeId(), super_property_args);
       break;
     }
-  }
-
-  // Value is in accumulator.
-  // TODO(franzih): Collect type profile once we can handle more than just
-  // return statements.
-  if (false && expr->HasTypeProfileSlot()) {
-    FeedbackSlot collect_type_feedback_slot = expr->TypeProfileSlot();
-
-    builder()->CollectTypeProfile(expr->position(),
-                                  feedback_index(collect_type_feedback_slot));
   }
 }
 
@@ -2999,7 +2987,11 @@ void BytecodeGenerator::VisitCompareOperation(CompareOperation* expr) {
     VisitForAccumulatorValue(expr->right());
     builder()->SetExpressionPosition(expr);
     FeedbackSlot slot = expr->CompareOperationFeedbackSlot();
-    builder()->CompareOperation(expr->op(), lhs, feedback_index(slot));
+    if (slot.IsInvalid()) {
+      builder()->CompareOperation(expr->op(), lhs);
+    } else {
+      builder()->CompareOperation(expr->op(), lhs, feedback_index(slot));
+    }
   }
 }
 
