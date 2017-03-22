@@ -786,6 +786,7 @@ class RuntimeCallTimer final {
   V(LoadIC_LoadFieldFromPrototypeDH)             \
   V(LoadIC_LoadField)                            \
   V(LoadIC_LoadGlobalFromPrototypeDH)            \
+  V(LoadIC_LoadIntegerIndexedExoticDH)           \
   V(LoadIC_LoadInterceptorDH)                    \
   V(LoadIC_LoadNonMaskingInterceptorDH)          \
   V(LoadIC_LoadInterceptorFromPrototypeDH)       \
@@ -814,8 +815,8 @@ class RuntimeCallTimer final {
   V(StoreIC_StoreField)                          \
   V(StoreIC_StoreFieldDH)                        \
   V(StoreIC_StoreFieldStub)                      \
-  V(StoreIC_StoreGlobal)                         \
-  V(StoreIC_StoreGlobalTransition)               \
+  V(StoreIC_StoreGlobalDH)                       \
+  V(StoreIC_StoreGlobalTransitionDH)             \
   V(StoreIC_StoreInterceptorStub)                \
   V(StoreIC_StoreNormalDH)                       \
   V(StoreIC_StoreScriptContextFieldStub)         \
