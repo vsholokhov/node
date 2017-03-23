@@ -14,6 +14,7 @@
 #include "src/code-factory.h"
 #include "src/factory.h"
 #include "src/ic/accessor-assembler.h"
+#include "src/ic/binary-op-assembler.h"
 #include "src/interpreter/bytecode-flags.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter-assembler.h"
@@ -39,11 +40,16 @@ class InterpreterGenerator {
 #undef DECLARE_BYTECODE_HANDLER_GENERATOR
 
  private:
-  // Generates code to perform the binary operation via |Generator|.
-  template <class Generator>
-  void DoBinaryOpWithFeedback(InterpreterAssembler* assembler);
+  typedef Node* (BinaryOpAssembler::*BinaryOpGenerator)(Node* context,
+                                                        Node* left, Node* right,
+                                                        Node* slot,
+                                                        Node* vector);
 
-  // Generates code to perform the comparison via |Generator| while gathering
+  // Generates code to perform the binary operation via |generator|.
+  void DoBinaryOpWithFeedback(InterpreterAssembler* assembler,
+                              BinaryOpGenerator generator);
+
+  // Generates code to perform the |compare_op| comparison while gathering
   // type feedback.
   void DoCompareOpWithFeedback(Token::Value compare_op,
                                InterpreterAssembler* assembler);
@@ -52,16 +58,6 @@ class InterpreterGenerator {
   // |bitwise_op| while gathering type feedback.
   void DoBitwiseBinaryOp(Token::Value bitwise_op,
                          InterpreterAssembler* assembler);
-
-  // Generates code to perform the binary operation via |Generator| using
-  // an immediate value rather the accumulator as the rhs operand.
-  template <class Generator>
-  void DoBinaryOpWithImmediate(InterpreterAssembler* assembler);
-
-  // Generates code to perform the unary operation via |Generator| while
-  // gatering type feedback.
-  template <class Generator>
-  void DoUnaryOpWithFeedback(InterpreterAssembler* assembler);
 
   // Generates code to perform the comparison operation associated with
   // |compare_op|.
@@ -963,17 +959,18 @@ void InterpreterGenerator::DoCompareOp(Token::Value compare_op,
   __ Dispatch();
 }
 
-template <class Generator>
 void InterpreterGenerator::DoBinaryOpWithFeedback(
-    InterpreterAssembler* assembler) {
+    InterpreterAssembler* assembler, BinaryOpGenerator generator) {
   Node* reg_index = __ BytecodeOperandReg(0);
   Node* lhs = __ LoadRegister(reg_index);
   Node* rhs = __ GetAccumulator();
   Node* context = __ GetContext();
   Node* slot_index = __ BytecodeOperandIdx(1);
   Node* feedback_vector = __ LoadFeedbackVector();
-  Node* result = Generator::Generate(assembler, lhs, rhs, slot_index,
-                                     feedback_vector, context);
+
+  BinaryOpAssembler binop_asm(assembler->state());
+  Node* result =
+      (binop_asm.*generator)(context, lhs, rhs, slot_index, feedback_vector);
   __ SetAccumulator(result);
   __ Dispatch();
 }
@@ -1171,35 +1168,40 @@ void InterpreterGenerator::DoCompareOpWithFeedback(
 //
 // Add register <src> to accumulator.
 void InterpreterGenerator::DoAdd(InterpreterAssembler* assembler) {
-  DoBinaryOpWithFeedback<AddWithFeedbackStub>(assembler);
+  DoBinaryOpWithFeedback(assembler,
+                         &BinaryOpAssembler::Generate_AddWithFeedback);
 }
 
 // Sub <src>
 //
 // Subtract register <src> from accumulator.
 void InterpreterGenerator::DoSub(InterpreterAssembler* assembler) {
-  DoBinaryOpWithFeedback<SubtractWithFeedbackStub>(assembler);
+  DoBinaryOpWithFeedback(assembler,
+                         &BinaryOpAssembler::Generate_SubtractWithFeedback);
 }
 
 // Mul <src>
 //
 // Multiply accumulator by register <src>.
 void InterpreterGenerator::DoMul(InterpreterAssembler* assembler) {
-  DoBinaryOpWithFeedback<MultiplyWithFeedbackStub>(assembler);
+  DoBinaryOpWithFeedback(assembler,
+                         &BinaryOpAssembler::Generate_MultiplyWithFeedback);
 }
 
 // Div <src>
 //
 // Divide register <src> by accumulator.
 void InterpreterGenerator::DoDiv(InterpreterAssembler* assembler) {
-  DoBinaryOpWithFeedback<DivideWithFeedbackStub>(assembler);
+  DoBinaryOpWithFeedback(assembler,
+                         &BinaryOpAssembler::Generate_DivideWithFeedback);
 }
 
 // Mod <src>
 //
 // Modulo register <src> by accumulator.
 void InterpreterGenerator::DoMod(InterpreterAssembler* assembler) {
-  DoBinaryOpWithFeedback<ModulusWithFeedbackStub>(assembler);
+  DoBinaryOpWithFeedback(assembler,
+                         &BinaryOpAssembler::Generate_ModulusWithFeedback);
 }
 
 void InterpreterGenerator::DoBitwiseBinaryOp(Token::Value bitwise_op,
@@ -1365,12 +1367,10 @@ void InterpreterGenerator::DoAddSmi(InterpreterAssembler* assembler) {
   __ Bind(&slowpath);
   {
     Node* context = __ GetContext();
-    AddWithFeedbackStub stub(__ isolate());
-    Callable callable =
-        Callable(stub.GetCode(), AddWithFeedbackStub::Descriptor(__ isolate()));
-    var_result.Bind(__ CallStub(callable, context, left, right,
-                                __ TruncateWordToWord32(slot_index),
-                                feedback_vector));
+    // TODO(ishell): pass slot as word-size value.
+    var_result.Bind(__ CallBuiltin(Builtins::kAddWithFeedback, context, left,
+                                   right, __ TruncateWordToWord32(slot_index),
+                                   feedback_vector));
     __ Goto(&end);
   }
   __ Bind(&end);
@@ -1419,12 +1419,10 @@ void InterpreterGenerator::DoSubSmi(InterpreterAssembler* assembler) {
   __ Bind(&slowpath);
   {
     Node* context = __ GetContext();
-    SubtractWithFeedbackStub stub(__ isolate());
-    Callable callable = Callable(
-        stub.GetCode(), SubtractWithFeedbackStub::Descriptor(__ isolate()));
-    var_result.Bind(__ CallStub(callable, context, left, right,
-                                __ TruncateWordToWord32(slot_index),
-                                feedback_vector));
+    // TODO(ishell): pass slot as word-size value.
+    var_result.Bind(
+        __ CallBuiltin(Builtins::kSubtractWithFeedback, context, left, right,
+                       __ TruncateWordToWord32(slot_index), feedback_vector));
     __ Goto(&end);
   }
   __ Bind(&end);
@@ -1552,19 +1550,6 @@ Node* InterpreterGenerator::BuildUnaryOp(Callable callable,
   Node* accumulator = __ GetAccumulator();
   Node* context = __ GetContext();
   return __ CallStub(callable.descriptor(), target, context, accumulator);
-}
-
-template <class Generator>
-void InterpreterGenerator::DoUnaryOpWithFeedback(
-    InterpreterAssembler* assembler) {
-  Node* value = __ GetAccumulator();
-  Node* context = __ GetContext();
-  Node* slot_index = __ BytecodeOperandIdx(0);
-  Node* feedback_vector = __ LoadFeedbackVector();
-  Node* result = Generator::Generate(assembler, value, context, feedback_vector,
-                                     slot_index);
-  __ SetAccumulator(result);
-  __ Dispatch();
 }
 
 // ToName

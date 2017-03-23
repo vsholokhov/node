@@ -762,6 +762,7 @@ class RuntimeCallTimer final {
   V(UnexpectedStubMiss)
 
 #define FOR_EACH_HANDLER_COUNTER(V)              \
+  V(IC_HandlerCacheHit)                          \
   V(KeyedLoadIC_LoadIndexedStringStub)           \
   V(KeyedLoadIC_LoadIndexedInterceptorStub)      \
   V(KeyedLoadIC_KeyedLoadSloppyArgumentsStub)    \
@@ -773,20 +774,32 @@ class RuntimeCallTimer final {
   V(KeyedStoreIC_StoreFastElementStub)           \
   V(KeyedStoreIC_StoreElementStub)               \
   V(LoadIC_FunctionPrototypeStub)                \
+  V(LoadIC_HandlerCacheHit_AccessCheck)          \
+  V(LoadIC_HandlerCacheHit_Exotic)               \
+  V(LoadIC_HandlerCacheHit_Interceptor)          \
+  V(LoadIC_HandlerCacheHit_JSProxy)              \
+  V(LoadIC_HandlerCacheHit_NonExistent)          \
   V(LoadIC_HandlerCacheHit_Accessor)             \
+  V(LoadIC_HandlerCacheHit_Data)                 \
+  V(LoadIC_HandlerCacheHit_Transition)           \
   V(LoadIC_LoadApiGetterDH)                      \
   V(LoadIC_LoadApiGetterFromPrototypeDH)         \
+  V(LoadIC_LoadApiGetterStub)                    \
   V(LoadIC_LoadCallback)                         \
   V(LoadIC_LoadConstantDH)                       \
   V(LoadIC_LoadConstantFromPrototypeDH)          \
+  V(LoadIC_LoadConstant)                         \
+  V(LoadIC_LoadConstantStub)                     \
   V(LoadIC_LoadFieldDH)                          \
   V(LoadIC_LoadFieldFromPrototypeDH)             \
+  V(LoadIC_LoadField)                            \
   V(LoadIC_LoadGlobalFromPrototypeDH)            \
   V(LoadIC_LoadIntegerIndexedExoticDH)           \
   V(LoadIC_LoadInterceptorDH)                    \
   V(LoadIC_LoadNonMaskingInterceptorDH)          \
   V(LoadIC_LoadInterceptorFromPrototypeDH)       \
   V(LoadIC_LoadNonexistentDH)                    \
+  V(LoadIC_LoadNonexistent)                      \
   V(LoadIC_LoadNormalDH)                         \
   V(LoadIC_LoadNormalFromPrototypeDH)            \
   V(LoadIC_LoadScriptContextFieldStub)           \
@@ -795,17 +808,27 @@ class RuntimeCallTimer final {
   V(LoadIC_Premonomorphic)                       \
   V(LoadIC_SlowStub)                             \
   V(LoadIC_StringLengthStub)                     \
+  V(StoreIC_HandlerCacheHit_AccessCheck)         \
+  V(StoreIC_HandlerCacheHit_Exotic)              \
+  V(StoreIC_HandlerCacheHit_Interceptor)         \
+  V(StoreIC_HandlerCacheHit_JSProxy)             \
+  V(StoreIC_HandlerCacheHit_NonExistent)         \
   V(StoreIC_HandlerCacheHit_Accessor)            \
+  V(StoreIC_HandlerCacheHit_Data)                \
+  V(StoreIC_HandlerCacheHit_Transition)          \
   V(StoreIC_NonReceiver)                         \
   V(StoreIC_Premonomorphic)                      \
   V(StoreIC_SlowStub)                            \
   V(StoreIC_StoreCallback)                       \
+  V(StoreIC_StoreField)                          \
   V(StoreIC_StoreFieldDH)                        \
+  V(StoreIC_StoreFieldStub)                      \
   V(StoreIC_StoreGlobalDH)                       \
   V(StoreIC_StoreGlobalTransitionDH)             \
   V(StoreIC_StoreInterceptorStub)                \
   V(StoreIC_StoreNormalDH)                       \
   V(StoreIC_StoreScriptContextFieldStub)         \
+  V(StoreIC_StoreTransition)                     \
   V(StoreIC_StoreTransitionDH)                   \
   V(StoreIC_StoreViaSetter)
 
@@ -967,8 +990,8 @@ class RuntimeCallTimerScope {
      MICROSECOND)                                                              \
   HT(asm_wasm_translation_time, V8.AsmWasmTranslationMicroSeconds, 1000000,    \
      MICROSECOND)                                                              \
-  HT(asm_wasm_lazy_compilation_time, V8.AsmWasmLazyCompilationMicroSeconds,    \
-     1000000, MICROSECOND)
+  HT(wasm_lazy_compilation_time, V8.WasmLazyCompilationMicroSeconds, 1000000,  \
+     MICROSECOND)
 
 #define AGGREGATABLE_HISTOGRAM_TIMER_LIST(AHT) \
   AHT(compile_lazy, V8.CompileLazyMicroSeconds)
@@ -1137,7 +1160,7 @@ class RuntimeCallTimerScope {
   SC(total_baseline_compile_count, V8.TotalBaselineCompileCount)               \
   SC(wasm_generated_code_size, V8.WasmGeneratedCodeBytes)                      \
   SC(wasm_reloc_size, V8.WasmRelocBytes)                                       \
-  SC(asm_wasm_lazily_compiled_functions, V8.AsmWasmLazilyCompiledFunctions)
+  SC(wasm_lazily_compiled_functions, V8.WasmLazilyCompiledFunctions)
 
 // This file contains all the v8 counters that are in use.
 class Counters {
