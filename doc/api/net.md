@@ -25,7 +25,7 @@ sockets on other operating systems.
 On UNIX, the local domain is also known as the UNIX domain. The path is a
 filesystem path name. It gets truncated to `sizeof(sockaddr_un.sun_path) - 1`,
 which varies on different operating system between 91 and 107 bytes.
-The typical values are 107 on Linux and 103 on OS X. The path is
+The typical values are 107 on Linux and 103 on macOS. The path is
 subject to the same naming conventions and permissions checks as would be done
 on file creation. It will be visible in the filesystem, and will *persist until
 unlinked*.
@@ -557,7 +557,7 @@ changes:
 
 Initiate a connection on a given socket. Normally this method is not needed,
 the socket should be created and opened with [`net.createConnection()`][]. Use
-this only if you are implementing a custom Socket.
+this only when implementing a custom Socket.
 
 For TCP connections, available `options` are:
 
@@ -650,8 +650,9 @@ added: v0.9.6
 -->
 
 The string representation of the local IP address the remote client is
-connecting on. For example, if you are listening on `'0.0.0.0'` and the
-client connects on `'192.168.1.1'`, the value would be `'192.168.1.1'`.
+connecting on. For example, in a server listening on `'0.0.0.0'`, if a client
+connects on `'192.168.1.1'`, the value of `socket.localAddress` would be
+`'192.168.1.1'`.
 
 ### socket.localPort
 <!-- YAML
@@ -874,7 +875,8 @@ Additional options:
   [`socket.setTimeout(timeout)`][] after the socket is created, but before
   it starts the connection.
 
-Here is an example of a client of the previously described echo server:
+Following is an example of a client of the echo server described
+in the [`net.createServer()`][] section:
 
 ```js
 const net = require('net');

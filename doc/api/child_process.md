@@ -75,7 +75,7 @@ when the child process terminates.
 
 The importance of the distinction between [`child_process.exec()`][] and
 [`child_process.execFile()`][] can vary based on platform. On Unix-type operating
-systems (Unix, Linux, OSX) [`child_process.execFile()`][] can be more efficient
+systems (Unix, Linux, macOS) [`child_process.execFile()`][] can be more efficient
 because it does not spawn a shell. On Windows, however, `.bat` and `.cmd`
 files are not executable on their own without a terminal, and therefore cannot
 be launched using [`child_process.execFile()`][]. When running on Windows, `.bat`
@@ -101,7 +101,9 @@ bat.stderr.on('data', (data) => {
 bat.on('exit', (code) => {
   console.log(`Child exited with code ${code}`);
 });
+```
 
+```js
 // OR...
 const exec = require('child_process').exec;
 exec('my.bat', (err, stdout, stderr) => {
@@ -148,7 +150,18 @@ added: v0.1.90
 * Returns: {ChildProcess}
 
 Spawns a shell then executes the `command` within that shell, buffering any
-generated output.
+generated output. The `command` string passed to the exec function is processed
+directly by the shell and special characters (vary based on
+[shell](https://en.wikipedia.org/wiki/List_of_command-line_interpreters))
+need to be dealt with accordingly:
+```js
+exec('"/path/to/test file/test.sh" arg1 arg2');
+//Double quotes are used so that the space in the path is not interpreted as
+//multiple arguments
+
+exec('echo "The \\$HOME variable is $HOME"');
+//The $HOME variable is escaped in the first instance, but not in the second
+```
 
 **Note: Never pass unsanitised user input to this function. Any input
 containing shell metacharacters may be used to trigger arbitrary command
@@ -184,14 +197,14 @@ The `options` argument may be passed as the second argument to customize how
 the process is spawned. The default options are:
 
 ```js
-{
+const defaults = {
   encoding: 'utf8',
   timeout: 0,
-  maxBuffer: 200*1024,
+  maxBuffer: 200 * 1024,
   killSignal: 'SIGTERM',
   cwd: null,
   env: null
-}
+};
 ```
 
 If `timeout` is greater than `0`, the parent will send the signal
@@ -351,10 +364,10 @@ trigger arbitrary command execution.**
 A third argument may be used to specify additional options, with these defaults:
 
 ```js
-{
+const defaults = {
   cwd: undefined,
   env: process.env
-}
+};
 ```
 
 Use `cwd` to specify the working directory from which the process is spawned.
@@ -433,7 +446,7 @@ child.on('error', (err) => {
 });
 ```
 
-*Note: Certain platforms (OS X, Linux) will use the value of `argv[0]` for the
+*Note: Certain platforms (macOS, Linux) will use the value of `argv[0]` for the
 process title while others (Windows, SunOS) will use `command`.*
 
 *Note: Node.js currently overwrites `argv[0]` with `process.execPath` on
@@ -795,8 +808,8 @@ The `'error'` event is emitted whenever:
 2. The process could not be killed, or
 3. Sending a message to the child process failed.
 
-Note that the `'exit'` event may or may not fire after an error has occurred.
-If you are listening to both the `'exit'` and `'error'` events, it is important
+*Note*: The `'exit'` event may or may not fire after an error has occurred.
+When listening to both the `'exit'` and `'error'` events, it is important
 to guard against accidentally invoking handler functions multiple times.
 
 See also [`child.kill()`][] and [`child.send()`][].
@@ -920,13 +933,17 @@ as in this example:
 'use strict';
 const spawn = require('child_process').spawn;
 
-const child = spawn('sh', ['-c',
-  `node -e "setInterval(() => {
+const child = spawn(
+  'sh',
+  [
+    '-c',
+    `node -e "setInterval(() => {
       console.log(process.pid, 'is alive')
     }, 500);"`
   ], {
     stdio: ['inherit', 'inherit', 'inherit']
-  });
+  }
+);
 
 setTimeout(() => {
   child.kill(); // does not terminate the node process in the shell

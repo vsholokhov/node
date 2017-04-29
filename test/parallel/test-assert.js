@@ -20,7 +20,7 @@
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 'use strict';
-require('../common');
+const common = require('../common');
 const assert = require('assert');
 const a = require('assert');
 
@@ -274,10 +274,12 @@ assert.doesNotThrow(makeBlock(a.deepStrictEqual, {a: 4}, {a: 4}));
 assert.doesNotThrow(makeBlock(a.deepStrictEqual,
                               {a: 4, b: '2'},
                               {a: 4, b: '2'}));
-assert.throws(makeBlock(a.deepStrictEqual, [4], ['4']));
+assert.throws(makeBlock(a.deepStrictEqual, [4], ['4']),
+              /^AssertionError: \[ 4 ] deepStrictEqual \[ '4' ]$/);
 assert.throws(makeBlock(a.deepStrictEqual, {a: 4}, {a: 4, b: true}),
-              a.AssertionError);
-assert.throws(makeBlock(a.deepStrictEqual, ['a'], {0: 'a'}));
+              /^AssertionError: { a: 4 } deepStrictEqual { a: 4, b: true }$/);
+assert.throws(makeBlock(a.deepStrictEqual, ['a'], {0: 'a'}),
+              /^AssertionError: \[ 'a' ] deepStrictEqual { '0': 'a' }$/);
 //(although not necessarily the same order),
 assert.doesNotThrow(makeBlock(a.deepStrictEqual,
                               {a: 4, b: '1'},
@@ -354,9 +356,11 @@ function thrower(errorConstructor) {
 assert.throws(makeBlock(thrower, a.AssertionError),
               a.AssertionError, 'message');
 assert.throws(makeBlock(thrower, a.AssertionError), a.AssertionError);
+// eslint-disable-next-line assert-throws-arguments
 assert.throws(makeBlock(thrower, a.AssertionError));
 
 // if not passing an error, catch all.
+// eslint-disable-next-line assert-throws-arguments
 assert.throws(makeBlock(thrower, TypeError));
 
 // when passing a type, only catch errors of the appropriate type
@@ -406,7 +410,7 @@ assert.doesNotThrow(function() { assert.ifError(); });
 
 assert.throws(() => {
   assert.doesNotThrow(makeBlock(thrower, Error), 'user message');
-}, /Got unwanted exception. user message/,
+}, /Got unwanted exception: user message/,
               'a.doesNotThrow ignores user message');
 
 // make sure that validating using constructor really works
@@ -505,22 +509,22 @@ a.throws(makeBlock(a.deepEqual, args, []));
 // check messages from assert.throws()
 {
   assert.throws(
-    () => { a.throws(() => {}); },
+    () => { a.throws(common.noop); },
     /^AssertionError: Missing expected exception\.$/
   );
 
   assert.throws(
-    () => { a.throws(() => {}, TypeError); },
+    () => { a.throws(common.noop, TypeError); },
     /^AssertionError: Missing expected exception \(TypeError\)\.$/
   );
 
   assert.throws(
-    () => { a.throws(() => {}, 'fhqwhgads'); },
+    () => { a.throws(common.noop, 'fhqwhgads'); },
     /^AssertionError: Missing expected exception: fhqwhgads$/
   );
 
   assert.throws(
-    () => { a.throws(() => {}, TypeError, 'fhqwhgads'); },
+    () => { a.throws(common.noop, TypeError, 'fhqwhgads'); },
     /^AssertionError: Missing expected exception \(TypeError\): fhqwhgads$/
   );
 }
@@ -565,6 +569,7 @@ testAssertionMessage({a: NaN, b: Infinity, c: -Infinity},
 {
   let threw = false;
   try {
+    // eslint-disable-next-line assert-throws-arguments
     assert.throws(function() {
       assert.ifError(null);
     });

@@ -12,7 +12,7 @@ function checkListResponse(err, response) {
   assert.ok(response[0]['devtoolsFrontendUrl']);
   assert.ok(
     response[0]['webSocketDebuggerUrl']
-      .match(/ws:\/\/127.0.0.1:\d+\/[0-9A-Fa-f]{8}-/));
+      .match(/ws:\/\/127\.0\.0\.1:\d+\/[0-9A-Fa-f]{8}-/));
 }
 
 function checkVersion(err, response) {
@@ -89,7 +89,7 @@ function setupExpectValue(value) {
 
 function testBreakpointOnStart(session) {
   console.log('[test]',
-              'Verifying debugger stops on start (--debug-brk option)');
+              'Verifying debugger stops on start (--inspect-brk option)');
   const commands = [
     { 'method': 'Runtime.enable' },
     { 'method': 'Debugger.enable' },

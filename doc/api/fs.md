@@ -14,7 +14,8 @@ first argument is always reserved for an exception. If the operation was
 completed successfully, then the first argument will be `null` or `undefined`.
 
 When using the synchronous form any exceptions are immediately thrown.
-You can use try/catch to handle exceptions or allow them to bubble up.
+Exceptions may be handled using `try`/`catch`, or they may be allowed to
+bubble up.
 
 Here is an example of the asynchronous version:
 
@@ -70,9 +71,13 @@ the entire process until they complete--halting all connections.
 The relative path to a filename can be used. Remember, however, that this path
 will be relative to `process.cwd()`.
 
-Most fs functions let you omit the callback argument. If you do, a default
-callback is used that rethrows errors. To get a trace to the original call
-site, set the `NODE_DEBUG` environment variable:
+While it is not recommended, most fs functions allow the callback argument to
+be omitted, in which case a default callback is used that rethrows errors. To
+get a trace to the original call site, set the `NODE_DEBUG` environment
+variable:
+
+*Note*: Omitting the callback function on asynchronous fs functions is
+deprecated and may result in an error being thrown in the future.
 
 ```txt
 $ cat script.js
@@ -217,8 +222,8 @@ synchronous counterparts are of this type.
 For a regular file [`util.inspect(stats)`][] would return a string very
 similar to this:
 
-```js
-{
+```
+Stats {
   dev: 2114,
   ino: 48064969,
   mode: 33188,
@@ -232,19 +237,17 @@ similar to this:
   atime: Mon, 10 Oct 2011 23:24:11 GMT,
   mtime: Mon, 10 Oct 2011 23:24:11 GMT,
   ctime: Mon, 10 Oct 2011 23:24:11 GMT,
-  birthtime: Mon, 10 Oct 2011 23:24:11 GMT
-}
+  birthtime: Mon, 10 Oct 2011 23:24:11 GMT }
 ```
 
 Please note that `atime`, `mtime`, `birthtime`, and `ctime` are
-instances of [`Date`][MDN-Date] object and to compare the values of
-these objects you should use appropriate methods. For most general
-uses [`getTime()`][MDN-Date-getTime] will return the number of
-milliseconds elapsed since _1 January 1970 00:00:00 UTC_ and this
-integer should be sufficient for any comparison, however there are
-additional methods which can be used for displaying fuzzy information.
-More details can be found in the [MDN JavaScript Reference][MDN-Date]
-page.
+instances of [`Date`][MDN-Date] object and appropriate methods should be used
+to compare the values of these objects. For most general uses
+[`getTime()`][MDN-Date-getTime] will return the number of milliseconds elapsed
+since _1 January 1970 00:00:00 UTC_ and this integer should be sufficient for
+any comparison, however there are additional methods which can be used for
+displaying fuzzy information. More details can be found in the
+[MDN JavaScript Reference][MDN-Date] page.
 
 ### Stat Time Values
 
@@ -377,12 +380,12 @@ fs.access('myfile', (err) => {
 ```js
 fs.open('myfile', 'wx', (err, fd) => {
   if (err) {
-    if (err.code === "EEXIST") {
+    if (err.code === 'EEXIST') {
       console.error('myfile already exists');
       return;
-    } else {
-      throw err;
     }
+
+    throw err;
   }
 
   writeMyData(fd);
@@ -394,12 +397,12 @@ fs.open('myfile', 'wx', (err, fd) => {
 ```js
 fs.access('myfile', (err) => {
   if (err) {
-    if (err.code === "ENOENT") {
+    if (err.code === 'ENOENT') {
       console.error('myfile does not exist');
       return;
-    } else {
-      throw err;
     }
+
+    throw err;
   }
 
   fs.open('myfile', 'r', (err, fd) => {
@@ -414,12 +417,12 @@ fs.access('myfile', (err) => {
 ```js
 fs.open('myfile', 'r', (err, fd) => {
   if (err) {
-    if (err.code === "ENOENT") {
+    if (err.code === 'ENOENT') {
       console.error('myfile does not exist');
       return;
-    } else {
-      throw err;
     }
+
+    throw err;
   }
 
   readMyData(fd);
@@ -631,13 +634,13 @@ default value of 64 kb for the same parameter.
 `options` is an object or string with the following defaults:
 
 ```js
-{
+const defaults = {
   flags: 'r',
   encoding: null,
   fd: null,
   mode: 0o666,
   autoClose: true
-}
+};
 ```
 
 `options` can include `start` and `end` values to read a range of bytes from
@@ -652,8 +655,8 @@ emitted. Note that `fd` should be blocking; non-blocking `fd`s should be passed
 to [`net.Socket`][].
 
 If `autoClose` is false, then the file descriptor won't be closed, even if
-there's an error.  It is your responsibility to close it and make sure
-there's no file descriptor leak.  If `autoClose` is set to true (default
+there's an error. It is the application's responsibility to close it and make
+sure there's no file descriptor leak. If `autoClose` is set to true (default
 behavior), on `error` or `end` the file descriptor will be closed
 automatically.
 
@@ -697,13 +700,13 @@ Returns a new [`WriteStream`][] object. (See [Writable Stream][]).
 `options` is an object or string with the following defaults:
 
 ```js
-{
+const defaults = {
   flags: 'w',
   defaultEncoding: 'utf8',
   fd: null,
   mode: 0o666,
   autoClose: true
-}
+};
 ```
 
 `options` may also include a `start` option to allow writing data at
@@ -715,8 +718,8 @@ default mode `w`. The `defaultEncoding` can be any one of those accepted by
 If `autoClose` is set to true (default behavior) on `error` or `end`
 the file descriptor will be closed automatically. If `autoClose` is false,
 then the file descriptor won't be closed, even if there's an error.
-It is your responsibility to close it and make sure
-there's no file descriptor leak.
+It is the application's responsibility to close it and make sure there's no
+file descriptor leak.
 
 Like [`ReadStream`][], if `fd` is specified, `WriteStream` will ignore the
 `path` argument and will use the specified file descriptor. This means that no
@@ -779,13 +782,14 @@ fs.exists('myfile', (exists) => {
 ```js
 fs.open('myfile', 'wx', (err, fd) => {
   if (err) {
-    if (err.code === "EEXIST") {
+    if (err.code === 'EEXIST') {
       console.error('myfile already exists');
       return;
-    } else {
-      throw err;
     }
+
+    throw err;
   }
+
   writeMyData(fd);
 });
 ```
@@ -809,15 +813,15 @@ fs.exists('myfile', (exists) => {
 ```js
 fs.open('myfile', 'r', (err, fd) => {
   if (err) {
-    if (err.code === "ENOENT") {
+    if (err.code === 'ENOENT') {
       console.error('myfile does not exist');
       return;
-    } else {
-      throw err;
     }
-  } else {
-    readMyData(fd);
+
+    throw err;
   }
+
+  readMyData(fd);
 });
 ```
 
@@ -1025,7 +1029,7 @@ const fd = fs.openSync('temp.txt', 'r+');
 
 // truncate the file to 10 bytes, whereas the actual size is 7 bytes
 fs.ftruncate(fd, 10, (err) => {
-  assert.ifError(!err);
+  assert.ifError(err);
   console.log(fs.readFileSync('temp.txt'));
 });
 // Prints: <Buffer 4e 6f 64 65 2e 6a 73 00 00 00>
@@ -1099,7 +1103,7 @@ changes:
 Asynchronous lchmod(2). No arguments other than a possible exception
 are given to the completion callback.
 
-Only available on Mac OS X.
+Only available on macOS.
 
 ## fs.lchmodSync(path, mode)
 <!-- YAML
@@ -1281,8 +1285,8 @@ fs.mkdtemp(tmpDir, (err, folder) => {
 });
 
 // This method is *CORRECT*:
-const path = require('path');
-fs.mkdtemp(tmpDir + path.sep, (err, folder) => {
+const { sep } = require('path');
+fs.mkdtemp(`${tmpDir}${sep}`, (err, folder) => {
   if (err) throw err;
   console.log(folder);
   // Will print something similar to `/tmp/abc123`.
@@ -1327,12 +1331,12 @@ An exception occurs if the file does not exist.
 * `'rs+'` - Open file for reading and writing in synchronous mode. Instructs
   the operating system to bypass the local file system cache.
 
-  This is primarily useful for opening files on NFS mounts as it allows you to
-  skip the potentially stale local cache. It has a very real impact on I/O
-  performance so don't use this flag unless you need it.
+  This is primarily useful for opening files on NFS mounts as it allows skipping
+  the potentially stale local cache. It has a very real impact on I/O
+  performance so using this flag is not recommended unless it is needed.
 
   Note that this doesn't turn `fs.open()` into a synchronous blocking call.
-  If that's what you want then you should be using `fs.openSync()`
+  If synchronous operation is desired `fs.openSync()` should be used.
 
 * `'w'` - Open file for writing.
 The file is created (if it does not exist) or truncated (if it exists).
@@ -1374,12 +1378,12 @@ The kernel ignores the position argument and always appends the data to
 the end of the file.
 
 _Note: The behavior of `fs.open()` is platform specific for some flags. As such,
-opening a directory on OS X and Linux with the `'a+'` flag - see example below -
-will return an error. In contrast, on Windows and FreeBSD, a file descriptor
-will be returned._
+opening a directory on macOS and Linux with the `'a+'` flag - see example
+below - will return an error. In contrast, on Windows and FreeBSD, a file
+descriptor will be returned._
 
 ```js
-// OS X and Linux
+// macOS and Linux
 fs.open('<directory>', 'a+', (err, fd) => {
   // => [Error: EISDIR: illegal operation on a directory, open <directory>]
 });
@@ -1415,7 +1419,7 @@ changes:
 -->
 
 * `fd` {integer}
-* `buffer` {string|Buffer|Uint8Array}
+* `buffer` {Buffer|Uint8Array}
 * `offset` {integer}
 * `length` {integer}
 * `position` {integer}
@@ -1442,6 +1446,9 @@ changes:
     pr-url: https://github.com/nodejs/node/pull/7897
     description: The `callback` parameter is no longer optional. Not passing
                  it will emit a deprecation warning.
+  - version: v6.0.0
+    pr-url: https://github.com/nodejs/node/pull/5616
+    description: The `options` parameter was added.
 -->
 
 * `path` {string|Buffer}
@@ -1763,7 +1770,7 @@ argument will automatically be normalized to absolute path.
 Here is an example below:
 
 ```js
-fs.symlink('./foo', './new-port');
+fs.symlink('./foo', './new-port', callback);
 ```
 
 It creates a symbolic link named "new-port" that points to "foo".
@@ -1842,8 +1849,8 @@ added: v0.1.31
 * `listener` {Function}
 
 Stop watching for changes on `filename`. If `listener` is specified, only that
-particular listener is removed. Otherwise, *all* listeners are removed and you
-have effectively stopped watching `filename`.
+particular listener is removed. Otherwise, *all* listeners are removed,
+effectively stopping watching of `filename`.
 
 Calling `fs.unwatchFile()` with a filename that is not being watched is a
 no-op, not an error.
@@ -1912,7 +1919,7 @@ changes:
   * `persistent` {boolean} Indicates whether the process should continue to run
     as long as files are being watched. default = `true`
   * `recursive` {boolean} Indicates whether all subdirectories should be
-    watched, or only the current directory. The applies when a directory is
+    watched, or only the current directory. This applies when a directory is
     specified, and only on supported platforms (See [Caveats][]). default =
     `false`
   * `encoding` {string} Specifies the character encoding to be used for the
@@ -1943,7 +1950,7 @@ Also note the listener callback is attached to the `'change'` event fired by
 The `fs.watch` API is not 100% consistent across platforms, and is
 unavailable in some situations.
 
-The recursive option is only supported on OS X and Windows.
+The recursive option is only supported on macOS and Windows.
 
 #### Availability
 
@@ -1954,7 +1961,7 @@ to be notified of filesystem changes.
 
 * On Linux systems, this uses [`inotify`]
 * On BSD systems, this uses [`kqueue`]
-* On OS X, this uses [`kqueue`] for files and [`FSEvents`] for directories.
+* On macOS, this uses [`kqueue`] for files and [`FSEvents`] for directories.
 * On SunOS systems (including Solaris and SmartOS), this uses [`event ports`].
 * On Windows systems, this feature depends on [`ReadDirectoryChangesW`].
 * On Aix systems, this feature depends on [`AHAFS`], which must be enabled.
@@ -1965,14 +1972,14 @@ directories can be unreliable, and in some cases impossible, on network file
 systems (NFS, SMB, etc), or host file systems when using virtualization software
 such as Vagrant, Docker, etc.
 
-You can still use `fs.watchFile`, which uses stat polling, but it is slower and
-less reliable.
+It is still possible to use `fs.watchFile()`, which uses stat polling, but
+this method is slower and less reliable.
 
 #### Inodes
 
 <!--type=misc-->
 
-On Linux and OS X systems, `fs.watch()` resolves the path to an [inode][] and
+On Linux and macOS systems, `fs.watch()` resolves the path to an [inode][] and
 watches the inode. If the watched path is deleted and recreated, it is assigned
 a new inode. The watch will emit an event for the delete but will continue
 watching the *original* inode. Events for the new inode will not be emitted.
@@ -1982,7 +1989,7 @@ In AIX, save and close of a file being watched causes two notifications -
 one for adding new content, and one for truncation. Moreover, save and
 close operations on some platforms cause inode changes that force watch
 operations to become invalid and ineffective. AIX retains inode for the
-lifetime of a file, that way though this is different from Linux / OS X,
+lifetime of a file, that way though this is different from Linux / macOS,
 this improves the usability of file watching. This is expected behavior.
 
 #### Filename Argument
@@ -2038,8 +2045,8 @@ fs.watchFile('message.text', (curr, prev) => {
 
 These stat objects are instances of `fs.Stat`.
 
-If you want to be notified when the file was modified, not just accessed,
-you need to compare `curr.mtime` and `prev.mtime`.
+To be notified when the file was modified, not just accessed, it is necessary
+to compare `curr.mtime` and `prev.mtime`.
 
 _Note: when an `fs.watchFile` operation results in an `ENOENT` error, it will
  invoke the listener once, with all the fields zeroed (or, for dates, the Unix
@@ -2173,7 +2180,7 @@ Example:
 ```js
 fs.writeFile('message.txt', 'Hello Node.js', (err) => {
   if (err) throw err;
-  console.log('It\'s saved!');
+  console.log('The file has been saved!');
 });
 ```
 

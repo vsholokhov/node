@@ -25,7 +25,6 @@
 #if defined(NODE_WANT_INTERNALS) && NODE_WANT_INTERNALS
 
 #include "ares.h"
-#include "debug-agent.h"
 #if HAVE_INSPECTOR
 #include "inspector_agent.h"
 #endif
@@ -35,7 +34,9 @@
 #include "util.h"
 #include "uv.h"
 #include "v8.h"
+#include "node.h"
 
+#include <list>
 #include <stdint.h>
 #include <vector>
 
@@ -127,6 +128,8 @@ namespace node {
   V(fingerprint_string, "fingerprint")                                        \
   V(flags_string, "flags")                                                    \
   V(get_string, "get")                                                        \
+  V(get_data_clone_error_string, "_getDataCloneError")                        \
+  V(get_shared_array_buffer_id_string, "_getSharedArrayBufferId")             \
   V(gid_string, "gid")                                                        \
   V(handle_string, "handle")                                                  \
   V(homedir_string, "homedir")                                                \
@@ -189,6 +192,7 @@ namespace node {
   V(priority_string, "priority")                                              \
   V(produce_cached_data_string, "produceCachedData")                          \
   V(raw_string, "raw")                                                        \
+  V(read_host_object_string, "_readHostObject")                               \
   V(readable_string, "readable")                                              \
   V(received_shutdown_string, "receivedShutdown")                             \
   V(refresh_string, "refresh")                                                \
@@ -237,6 +241,7 @@ namespace node {
   V(windows_verbatim_arguments_string, "windowsVerbatimArguments")            \
   V(wrap_string, "wrap")                                                      \
   V(writable_string, "writable")                                              \
+  V(write_host_object_string, "_writeHostObject")                             \
   V(write_queue_size_string, "writeQueueSize")                                \
   V(x_forwarded_string, "x-forwarded-for")                                    \
   V(zero_return_string, "ZERO_RETURN")                                        \
@@ -269,6 +274,7 @@ namespace node {
   V(tls_wrap_constructor_template, v8::FunctionTemplate)                      \
   V(tty_constructor_template, v8::FunctionTemplate)                           \
   V(udp_constructor_function, v8::Function)                                   \
+  V(url_constructor_function, v8::Function)                                   \
   V(write_wrap_constructor_function, v8::Function)                            \
 
 class Environment;
@@ -434,6 +440,7 @@ class Environment {
              const char* const* exec_argv,
              bool start_profiler_idle_notifier);
   void AssignToContext(v8::Local<v8::Context> context);
+  void CleanupHandles();
 
   void StartProfilerIdleNotifier();
   void StopProfilerIdleNotifier();
@@ -525,6 +532,9 @@ class Environment {
 
   inline v8::Local<v8::Object> NewInternalFieldObject();
 
+  void AtExit(void (*cb)(void* arg), void* arg);
+  void RunAtExitCallbacks();
+
   // Strings and private symbols are shared across shared contexts
   // The getters simply proxy to the per-isolate primitive.
 #define VP(PropertyName, StringValue) V(v8::Private, PropertyName)
@@ -543,10 +553,6 @@ class Environment {
   ENVIRONMENT_STRONG_PERSISTENT_PROPERTIES(V)
 #undef V
 
-  inline debugger::Agent* debugger_agent() {
-    return &debugger_agent_;
-  }
-
 #if HAVE_INSPECTOR
   inline inspector::Agent* inspector_agent() {
     return &inspector_agent_;
@@ -561,6 +567,8 @@ class Environment {
   inline ReqWrapQueue* req_wrap_queue() { return &req_wrap_queue_; }
 
   static const int kContextEmbedderDataIndex = NODE_CONTEXT_EMBEDDER_DATA_INDEX;
+
+  void AddPromiseHook(promise_hook_func fn, void* arg);
 
  private:
   inline void ThrowError(v8::Local<v8::Value> (*fun)(v8::Local<v8::String>),
@@ -586,7 +594,6 @@ class Environment {
   size_t makecallback_cntr_;
   int64_t async_wrap_uid_;
   std::vector<int64_t> destroy_ids_list_;
-  debugger::Agent debugger_agent_;
 #if HAVE_INSPECTOR
   inspector::Agent inspector_agent_;
 #endif
@@ -603,6 +610,22 @@ class Environment {
   char* http_parser_buffer_;
 
   double* fs_stats_field_array_;
+
+  struct AtExitCallback {
+    void (*cb_)(void* arg);
+    void* arg_;
+  };
+  std::list<AtExitCallback> at_exit_functions_;
+
+  struct PromiseHookCallback {
+    promise_hook_func cb_;
+    void* arg_;
+  };
+  std::vector<PromiseHookCallback> promise_hooks_;
+
+  static void EnvPromiseHook(v8::PromiseHookType type,
+                             v8::Local<v8::Promise> promise,
+                             v8::Local<v8::Value> parent);
 
 #define V(PropertyName, TypeName)                                             \
   v8::Persistent<TypeName> PropertyName ## _;

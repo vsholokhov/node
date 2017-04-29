@@ -35,6 +35,9 @@ const execSync = require('child_process').execSync;
 const testRoot = process.env.NODE_TEST_DIR ?
                    fs.realpathSync(process.env.NODE_TEST_DIR) : __dirname;
 
+const noop = () => {};
+
+exports.noop = noop;
 exports.fixturesDir = path.join(__dirname, 'fixtures');
 exports.tmpDirName = 'tmp';
 // PORT should match the definition in test/testpy/__init__.py.
@@ -401,7 +404,7 @@ process.on('exit', function() {
   if (!exports.globalCheck) return;
   const leaked = leakedGlobals();
   if (leaked.length > 0) {
-    fail(`Unexpected global(s) found: ${leaked.join(', ')}`);
+    assert.fail(`Unexpected global(s) found: ${leaked.join(', ')}`);
   }
 });
 
@@ -429,6 +432,13 @@ function runCallChecks(exitCode) {
 
 
 exports.mustCall = function(fn, expected) {
+  if (typeof fn === 'number') {
+    expected = fn;
+    fn = noop;
+  } else if (fn === undefined) {
+    fn = noop;
+  }
+
   if (expected === undefined)
     expected = 1;
   else if (typeof expected !== 'number')
@@ -497,14 +507,9 @@ exports.canCreateSymLink = function() {
   return true;
 };
 
-function fail(msg) {
-  assert.fail(null, null, msg);
-}
-exports.fail = fail;
-
 exports.mustNotCall = function(msg) {
   return function mustNotCall() {
-    fail(msg || 'function should not have been called');
+    assert.fail(msg || 'function should not have been called');
   };
 };
 
@@ -525,9 +530,9 @@ util.inherits(ArrayStream, stream.Stream);
 exports.ArrayStream = ArrayStream;
 ArrayStream.prototype.readable = true;
 ArrayStream.prototype.writable = true;
-ArrayStream.prototype.pause = function() {};
-ArrayStream.prototype.resume = function() {};
-ArrayStream.prototype.write = function() {};
+ArrayStream.prototype.pause = noop;
+ArrayStream.prototype.resume = noop;
+ArrayStream.prototype.write = noop;
 
 // Returns true if the exit code "exitCode" and/or signal name "signal"
 // represent the exit code and/or signal name of a node process that aborted,
@@ -612,12 +617,14 @@ exports.WPT = {
   assert_false: (value, message) => assert.strictEqual(value, false, message),
   assert_throws: (code, func, desc) => {
     assert.throws(func, (err) => {
-      return typeof err === 'object' && 'name' in err && err.name === code.name;
+      return typeof err === 'object' &&
+             'name' in err &&
+             err.name.startsWith(code.name);
     }, desc);
   },
   assert_array_equals: assert.deepStrictEqual,
   assert_unreached(desc) {
-    assert.fail(undefined, undefined, `Reached unreachable code: ${desc}`);
+    assert.fail(`Reached unreachable code: ${desc}`);
   }
 };
 
@@ -639,8 +646,40 @@ exports.expectsError = function expectsError({code, type, message}) {
 };
 
 exports.skipIfInspectorDisabled = function skipIfInspectorDisabled() {
-  if (!exports.hasCrypto) {
-    exports.skip('missing ssl support so inspector is disabled');
+  if (process.config.variables.v8_enable_inspector === 0) {
+    exports.skip('V8 inspector is disabled');
     process.exit(0);
   }
+};
+
+const arrayBufferViews = [
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  Float32Array,
+  Float64Array,
+  DataView
+];
+
+exports.getArrayBufferViews = function getArrayBufferViews(buf) {
+  const { buffer, byteOffset, byteLength } = buf;
+
+  const out = [];
+  for (const type of arrayBufferViews) {
+    const { BYTES_PER_ELEMENT = 1 } = type;
+    if (byteLength % BYTES_PER_ELEMENT === 0) {
+      out.push(new type(buffer, byteOffset, byteLength / BYTES_PER_ELEMENT));
+    }
+  }
+  return out;
+};
+
+// Crash the process on unhandled rejections.
+exports.crashOnUnhandledRejection = function() {
+  process.on('unhandledRejection',
+             (err) => process.nextTick(() => { throw err; }));
 };

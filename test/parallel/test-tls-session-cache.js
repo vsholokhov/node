@@ -56,7 +56,8 @@ function doTest(testOptions, callback) {
     key: key,
     cert: cert,
     ca: [cert],
-    requestCert: true
+    requestCert: true,
+    rejectUnauthorized: false
   };
   let requestCount = 0;
   let resumeCount = 0;
@@ -139,7 +140,7 @@ function doTest(testOptions, callback) {
             spawnClient();
             return;
           }
-          common.fail(`code: ${code}, signal: ${signal}, output: ${err}`);
+          assert.fail(`code: ${code}, signal: ${signal}, output: ${err}`);
         }
         assert.strictEqual(code, 0);
         server.close(common.mustCall(function() {

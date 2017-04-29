@@ -21,9 +21,11 @@
 
 #include "node.h"
 #include "node_buffer.h"
+#include "node_constants.h"
 #include "node_crypto.h"
 #include "node_crypto_bio.h"
 #include "node_crypto_groups.h"
+#include "node_mutex.h"
 #include "tls_wrap.h"  // TLSWrap
 
 #include "async-wrap.h"
@@ -101,6 +103,7 @@ using v8::HandleScope;
 using v8::Integer;
 using v8::Isolate;
 using v8::Local;
+using v8::Maybe;
 using v8::Null;
 using v8::Object;
 using v8::Persistent;
@@ -141,11 +144,9 @@ static X509_NAME *cnnic_ev_name =
 
 static Mutex* mutexes;
 
-#if !defined(NODE_OPENSSL_CERT_STORE)
 const char* const root_certs[] = {
 #include "node_root_certs.h"  // NOLINT(build/include_order)
 };
-#endif
 
 std::string extra_root_certs_file;  // NOLINT(runtime/string)
 
@@ -720,7 +721,6 @@ static int X509_up_ref(X509* cert) {
 
 
 static X509_STORE* NewRootCertStore() {
-#if !defined(NODE_OPENSSL_CERT_STORE)
   if (root_certs_vector.empty()) {
     for (size_t i = 0; i < arraysize(root_certs); i++) {
       BIO* bp = NodeBIO::NewFixed(root_certs[i], strlen(root_certs[i]));
@@ -733,7 +733,6 @@ static X509_STORE* NewRootCertStore() {
       root_certs_vector.push_back(x509);
     }
   }
-#endif
 
   X509_STORE* store = X509_STORE_new();
   if (ssl_openssl_cert_store) {
@@ -2785,7 +2784,9 @@ inline bool CertIsStartComOrWoSign(X509_NAME* name) {
     startcom_wosign_data = dn.data;
     startcom_wosign_name = d2i_X509_NAME(nullptr, &startcom_wosign_data,
                                          dn.len);
-    if (X509_NAME_cmp(name, startcom_wosign_name) == 0)
+    int cmp = X509_NAME_cmp(name, startcom_wosign_name);
+    X509_NAME_free(startcom_wosign_name);
+    if (cmp == 0)
       return true;
   }
 
@@ -2830,8 +2831,10 @@ inline CheckResult CheckWhitelistedServerCert(X509_STORE_CTX* ctx) {
   }
 
   X509* leaf_cert = sk_X509_value(chain, 0);
-  if (!CheckStartComOrWoSign(root_name, leaf_cert))
+  if (!CheckStartComOrWoSign(root_name, leaf_cert)) {
+    sk_X509_pop_free(chain, X509_free);
     return CHECK_CERT_REVOKED;
+  }
 
   // When the cert is issued from either CNNNIC ROOT CA or CNNNIC EV
   // ROOT CA, check a hash of its leaf cert if it is in the whitelist.
@@ -3791,9 +3794,8 @@ void Hmac::HmacDigest(const FunctionCallbackInfo<Value>& args) {
 
   enum encoding encoding = BUFFER;
   if (args.Length() >= 1) {
-    encoding = ParseEncoding(env->isolate(),
-                             args[0]->ToString(env->isolate()),
-                             BUFFER);
+    CHECK(args[0]->IsString());
+    encoding = ParseEncoding(env->isolate(), args[0], BUFFER);
   }
 
   unsigned char* md_value = nullptr;
@@ -3915,9 +3917,8 @@ void Hash::HashDigest(const FunctionCallbackInfo<Value>& args) {
 
   enum encoding encoding = BUFFER;
   if (args.Length() >= 1) {
-    encoding = ParseEncoding(env->isolate(),
-                             args[0]->ToString(env->isolate()),
-                             BUFFER);
+    CHECK(args[0]->IsString());
+    encoding = ParseEncoding(env->isolate(), args[0], BUFFER);
   }
 
   unsigned char md_value[EVP_MAX_MD_SIZE];
@@ -3972,6 +3973,19 @@ void SignBase::CheckThrow(SignBase::Error error) {
   }
 }
 
+static bool ApplyRSAOptions(EVP_PKEY* pkey, EVP_PKEY_CTX* pkctx, int padding,
+                            int salt_len) {
+  if (pkey->type == EVP_PKEY_RSA || pkey->type == EVP_PKEY_RSA2) {
+    if (EVP_PKEY_CTX_set_rsa_padding(pkctx, padding) <= 0)
+      return false;
+    if (padding == RSA_PKCS1_PSS_PADDING) {
+      if (EVP_PKEY_CTX_set_rsa_pss_saltlen(pkctx, salt_len) <= 0)
+        return false;
+    }
+  }
+
+  return true;
+}
 
 
 
@@ -4001,7 +4015,7 @@ SignBase::Error Sign::SignInit(const char* sign_type) {
     return kSignUnknownDigest;
 
   EVP_MD_CTX_init(&mdctx_);
-  if (!EVP_SignInit_ex(&mdctx_, md, nullptr))
+  if (!EVP_DigestInit_ex(&mdctx_, md, nullptr))
     return kSignInit;
   initialised_ = true;
 
@@ -4028,7 +4042,7 @@ void Sign::SignInit(const FunctionCallbackInfo<Value>& args) {
 SignBase::Error Sign::SignUpdate(const char* data, int len) {
   if (!initialised_)
     return kSignNotInitialised;
-  if (!EVP_SignUpdate(&mdctx_, data, len))
+  if (!EVP_DigestUpdate(&mdctx_, data, len))
     return kSignUpdate;
   return kSignOk;
 }
@@ -4058,12 +4072,54 @@ void Sign::SignUpdate(const FunctionCallbackInfo<Value>& args) {
   sign->CheckThrow(err);
 }
 
+static int Node_SignFinal(EVP_MD_CTX* mdctx, unsigned char* md,
+                          unsigned int* sig_len, EVP_PKEY* pkey, int padding,
+                          int pss_salt_len) {
+  unsigned char m[EVP_MAX_MD_SIZE];
+  unsigned int m_len;
+  int rv = 0;
+  EVP_PKEY_CTX* pkctx = nullptr;
+
+  *sig_len = 0;
+  if (!EVP_DigestFinal_ex(mdctx, m, &m_len))
+    return rv;
+
+  if (mdctx->digest->flags & EVP_MD_FLAG_PKEY_METHOD_SIGNATURE) {
+    size_t sltmp = static_cast<size_t>(EVP_PKEY_size(pkey));
+    pkctx = EVP_PKEY_CTX_new(pkey, nullptr);
+    if (pkctx == nullptr)
+      goto err;
+    if (EVP_PKEY_sign_init(pkctx) <= 0)
+      goto err;
+    if (!ApplyRSAOptions(pkey, pkctx, padding, pss_salt_len))
+      goto err;
+    if (EVP_PKEY_CTX_set_signature_md(pkctx, mdctx->digest) <= 0)
+      goto err;
+    if (EVP_PKEY_sign(pkctx, md, &sltmp, m, m_len) <= 0)
+      goto err;
+    *sig_len = sltmp;
+    rv = 1;
+   err:
+    EVP_PKEY_CTX_free(pkctx);
+    return rv;
+  }
+
+  if (mdctx->digest->sign == nullptr) {
+    EVPerr(EVP_F_EVP_SIGNFINAL, EVP_R_NO_SIGN_FUNCTION_CONFIGURED);
+    return 0;
+  }
+
+  return mdctx->digest->sign(mdctx->digest->type, m, m_len, md, sig_len,
+                             pkey->pkey.ptr);
+}
 
 SignBase::Error Sign::SignFinal(const char* key_pem,
                                 int key_pem_len,
                                 const char* passphrase,
                                 unsigned char** sig,
-                                unsigned int *sig_len) {
+                                unsigned int* sig_len,
+                                int padding,
+                                int salt_len) {
   if (!initialised_)
     return kSignNotInitialised;
 
@@ -4109,7 +4165,7 @@ SignBase::Error Sign::SignFinal(const char* key_pem,
   }
 #endif  // NODE_FIPS_MODE
 
-  if (EVP_SignFinal(&mdctx_, *sig, sig_len, pkey))
+  if (Node_SignFinal(&mdctx_, *sig, sig_len, pkey, padding, salt_len))
     fatal = false;
 
   initialised_ = false;
@@ -4139,18 +4195,22 @@ void Sign::SignFinal(const FunctionCallbackInfo<Value>& args) {
   unsigned int md_len;
 
   unsigned int len = args.Length();
-  enum encoding encoding = BUFFER;
-  if (len >= 2 && args[1]->IsString()) {
-    encoding = ParseEncoding(env->isolate(),
-                             args[1]->ToString(env->isolate()),
-                             BUFFER);
-  }
 
-  node::Utf8Value passphrase(env->isolate(), args[2]);
+  node::Utf8Value passphrase(env->isolate(), args[1]);
 
   THROW_AND_RETURN_IF_NOT_BUFFER(args[0], "Data");
   size_t buf_len = Buffer::Length(args[0]);
   char* buf = Buffer::Data(args[0]);
+
+  CHECK(args[2]->IsInt32());
+  Maybe<int32_t> maybe_padding = args[2]->Int32Value(env->context());
+  CHECK(maybe_padding.IsJust());
+  int padding = maybe_padding.ToChecked();
+
+  CHECK(args[3]->IsInt32());
+  Maybe<int32_t> maybe_salt_len = args[3]->Int32Value(env->context());
+  CHECK(maybe_salt_len.IsJust());
+  int salt_len = maybe_salt_len.ToChecked();
 
   md_len = 8192;  // Maximum key size is 8192 bits
   md_value = new unsigned char[md_len];
@@ -4161,9 +4221,11 @@ void Sign::SignFinal(const FunctionCallbackInfo<Value>& args) {
   Error err = sign->SignFinal(
       buf,
       buf_len,
-      len >= 3 && !args[2]->IsNull() ? *passphrase : nullptr,
+      len >= 2 && !args[1]->IsNull() ? *passphrase : nullptr,
       &md_value,
-      &md_len);
+      &md_len,
+      padding,
+      salt_len);
   if (err != kSignOk) {
     delete[] md_value;
     md_value = nullptr;
@@ -4171,10 +4233,9 @@ void Sign::SignFinal(const FunctionCallbackInfo<Value>& args) {
     return sign->CheckThrow(err);
   }
 
-  Local<Value> rc = StringBytes::Encode(env->isolate(),
-                                        reinterpret_cast<const char*>(md_value),
-                                        md_len,
-                                        encoding);
+  Local<Object> rc = Buffer::Copy(env->isolate(),
+                                  reinterpret_cast<const char*>(md_value),
+                                  md_len).ToLocalChecked();
   delete[] md_value;
   args.GetReturnValue().Set(rc);
 }
@@ -4207,7 +4268,7 @@ SignBase::Error Verify::VerifyInit(const char* verify_type) {
     return kSignUnknownDigest;
 
   EVP_MD_CTX_init(&mdctx_);
-  if (!EVP_VerifyInit_ex(&mdctx_, md, nullptr))
+  if (!EVP_DigestInit_ex(&mdctx_, md, nullptr))
     return kSignInit;
   initialised_ = true;
 
@@ -4235,7 +4296,7 @@ SignBase::Error Verify::VerifyUpdate(const char* data, int len) {
   if (!initialised_)
     return kSignNotInitialised;
 
-  if (!EVP_VerifyUpdate(&mdctx_, data, len))
+  if (!EVP_DigestUpdate(&mdctx_, data, len))
     return kSignUpdate;
 
   return kSignOk;
@@ -4271,6 +4332,8 @@ SignBase::Error Verify::VerifyFinal(const char* key_pem,
                                     int key_pem_len,
                                     const char* sig,
                                     int siglen,
+                                    int padding,
+                                    int saltlen,
                                     bool* verify_result) {
   if (!initialised_)
     return kSignNotInitialised;
@@ -4282,7 +4345,10 @@ SignBase::Error Verify::VerifyFinal(const char* key_pem,
   BIO* bp = nullptr;
   X509* x509 = nullptr;
   bool fatal = true;
+  unsigned char m[EVP_MAX_MD_SIZE];
+  unsigned int m_len;
   int r = 0;
+  EVP_PKEY_CTX* pkctx = nullptr;
 
   bp = BIO_new_mem_buf(const_cast<char*>(key_pem), key_pem_len);
   if (bp == nullptr)
@@ -4317,11 +4383,29 @@ SignBase::Error Verify::VerifyFinal(const char* key_pem,
       goto exit;
   }
 
+  if (!EVP_DigestFinal_ex(&mdctx_, m, &m_len)) {
+    goto exit;
+  }
+
   fatal = false;
-  r = EVP_VerifyFinal(&mdctx_,
+
+  pkctx = EVP_PKEY_CTX_new(pkey, nullptr);
+  if (pkctx == nullptr)
+    goto err;
+  if (EVP_PKEY_verify_init(pkctx) <= 0)
+    goto err;
+  if (!ApplyRSAOptions(pkey, pkctx, padding, saltlen))
+    goto err;
+  if (EVP_PKEY_CTX_set_signature_md(pkctx, mdctx_.digest) <= 0)
+    goto err;
+  r = EVP_PKEY_verify(pkctx,
                       reinterpret_cast<const unsigned char*>(sig),
                       siglen,
-                      pkey);
+                      m,
+                      m_len);
+
+ err:
+  EVP_PKEY_CTX_free(pkctx);
 
  exit:
   if (pkey != nullptr)
@@ -4354,33 +4438,22 @@ void Verify::VerifyFinal(const FunctionCallbackInfo<Value>& args) {
 
   THROW_AND_RETURN_IF_NOT_STRING_OR_BUFFER(args[1], "Hash");
 
-  enum encoding encoding = UTF8;
-  if (args.Length() >= 3) {
-    encoding = ParseEncoding(env->isolate(),
-                             args[2]->ToString(env->isolate()),
-                             UTF8);
-  }
+  char* hbuf = Buffer::Data(args[1]);
+  ssize_t hlen = Buffer::Length(args[1]);
 
-  ssize_t hlen = StringBytes::Size(env->isolate(), args[1], encoding);
+  CHECK(args[2]->IsInt32());
+  Maybe<int32_t> maybe_padding = args[2]->Int32Value(env->context());
+  CHECK(maybe_padding.IsJust());
+  int padding = maybe_padding.ToChecked();
 
-  // only copy if we need to, because it's a string.
-  char* hbuf;
-  if (args[1]->IsString()) {
-    hbuf = new char[hlen];
-    ssize_t hwritten = StringBytes::Write(env->isolate(),
-                                          hbuf,
-                                          hlen,
-                                          args[1],
-                                          encoding);
-    CHECK_EQ(hwritten, hlen);
-  } else {
-    hbuf = Buffer::Data(args[1]);
-  }
+  CHECK(args[3]->IsInt32());
+  Maybe<int32_t> maybe_salt_len = args[3]->Int32Value(env->context());
+  CHECK(maybe_salt_len.IsJust());
+  int salt_len = maybe_salt_len.ToChecked();
 
   bool verify_result;
-  Error err = verify->VerifyFinal(kbuf, klen, hbuf, hlen, &verify_result);
-  if (args[1]->IsString())
-    delete[] hbuf;
+  Error err = verify->VerifyFinal(kbuf, klen, hbuf, hlen, padding, salt_len,
+                                  &verify_result);
   if (err != kSignOk)
     return verify->CheckThrow(err);
   args.GetReturnValue().Set(verify_result);
@@ -5477,11 +5550,18 @@ void PBKDF2(const FunctionCallbackInfo<Value>& args) {
 // Only instantiate within a valid HandleScope.
 class RandomBytesRequest : public AsyncWrap {
  public:
-  RandomBytesRequest(Environment* env, Local<Object> object, size_t size)
+  enum FreeMode { FREE_DATA, DONT_FREE_DATA };
+
+  RandomBytesRequest(Environment* env,
+                     Local<Object> object,
+                     size_t size,
+                     char* data,
+                     FreeMode free_mode)
       : AsyncWrap(env, object, AsyncWrap::PROVIDER_CRYPTO),
         error_(0),
         size_(size),
-        data_(node::Malloc(size)) {
+        data_(data),
+        free_mode_(free_mode) {
     Wrap(object, this);
   }
 
@@ -5502,9 +5582,15 @@ class RandomBytesRequest : public AsyncWrap {
     return data_;
   }
 
+  inline void set_data(char* data) {
+    data_ = data;
+  }
+
   inline void release() {
-    free(data_);
     size_ = 0;
+    if (free_mode_ == FREE_DATA) {
+      free(data_);
+    }
   }
 
   inline void return_memory(char** d, size_t* len) {
@@ -5530,6 +5616,7 @@ class RandomBytesRequest : public AsyncWrap {
   unsigned long error_;  // NOLINT(runtime/int)
   size_t size_;
   char* data_;
+  const FreeMode free_mode_;
 };
 
 
@@ -5568,7 +5655,18 @@ void RandomBytesCheck(RandomBytesRequest* req, Local<Value> argv[2]) {
     size_t size;
     req->return_memory(&data, &size);
     argv[0] = Null(req->env()->isolate());
-    argv[1] = Buffer::New(req->env(), data, size).ToLocalChecked();
+    Local<Value> buffer =
+        req->object()->Get(req->env()->context(),
+                           req->env()->buffer_string()).ToLocalChecked();
+
+    if (buffer->IsUint8Array()) {
+      CHECK_LE(req->size(), Buffer::Length(buffer));
+      char* buf = Buffer::Data(buffer);
+      memcpy(buf, data, req->size());
+      argv[1] = buffer;
+    } else {
+      argv[1] = Buffer::New(req->env(), data, size).ToLocalChecked();
+    }
   }
 }
 
@@ -5587,11 +5685,22 @@ void RandomBytesAfter(uv_work_t* work_req, int status) {
 }
 
 
+void RandomBytesProcessSync(Environment* env,
+                            RandomBytesRequest* req,
+                            Local<Value> argv[2]) {
+  env->PrintSyncTrace();
+  RandomBytesWork(req->work_req());
+  RandomBytesCheck(req, argv);
+  delete req;
+
+  if (!argv[0]->IsNull())
+    env->isolate()->ThrowException(argv[0]);
+}
+
+
 void RandomBytes(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
 
-  // maybe allow a buffer to write to? cuts down on object creation
-  // when generating random data in a loop
   if (!args[0]->IsUint32()) {
     return env->ThrowTypeError("size must be a number >= 0");
   }
@@ -5601,7 +5710,13 @@ void RandomBytes(const FunctionCallbackInfo<Value>& args) {
     return env->ThrowRangeError("size is not a valid Smi");
 
   Local<Object> obj = env->NewInternalFieldObject();
-  RandomBytesRequest* req = new RandomBytesRequest(env, obj, size);
+  char* data = node::Malloc(size);
+  RandomBytesRequest* req =
+      new RandomBytesRequest(env,
+                             obj,
+                             size,
+                             data,
+                             RandomBytesRequest::FREE_DATA);
 
   if (args[1]->IsFunction()) {
     obj->Set(env->ondone_string(), args[1]);
@@ -5614,15 +5729,55 @@ void RandomBytes(const FunctionCallbackInfo<Value>& args) {
                   RandomBytesAfter);
     args.GetReturnValue().Set(obj);
   } else {
-    env->PrintSyncTrace();
     Local<Value> argv[2];
-    RandomBytesWork(req->work_req());
-    RandomBytesCheck(req, argv);
-    delete req;
+    RandomBytesProcessSync(env, req, argv);
+    if (argv[0]->IsNull())
+      args.GetReturnValue().Set(argv[1]);
+  }
+}
 
-    if (!argv[0]->IsNull())
-      env->isolate()->ThrowException(argv[0]);
-    else
+
+void RandomBytesBuffer(const FunctionCallbackInfo<Value>& args) {
+  Environment* env = Environment::GetCurrent(args);
+
+  CHECK(args[0]->IsUint8Array());
+  CHECK(args[1]->IsUint32());
+  CHECK(args[2]->IsUint32());
+
+  int64_t offset = args[1]->IntegerValue();
+  int64_t size = args[2]->IntegerValue();
+
+  Local<Object> obj = env->NewInternalFieldObject();
+  obj->Set(env->context(), env->buffer_string(), args[0]).FromJust();
+  char* data = Buffer::Data(args[0]);
+  data += offset;
+
+  RandomBytesRequest* req =
+      new RandomBytesRequest(env,
+                             obj,
+                             size,
+                             data,
+                             RandomBytesRequest::DONT_FREE_DATA);
+  if (args[3]->IsFunction()) {
+    obj->Set(env->context(),
+             FIXED_ONE_BYTE_STRING(args.GetIsolate(), "ondone"),
+             args[3]).FromJust();
+
+    if (env->in_domain()) {
+      obj->Set(env->context(),
+               env->domain_string(),
+               env->domain_array()->Get(0)).FromJust();
+    }
+
+    uv_queue_work(env->event_loop(),
+                  req->work_req(),
+                  RandomBytesWork,
+                  RandomBytesAfter);
+    args.GetReturnValue().Set(obj);
+  } else {
+    Local<Value> argv[2];
+    RandomBytesProcessSync(env, req, argv);
+    if (argv[0]->IsNull())
       args.GetReturnValue().Set(argv[1]);
   }
 }
@@ -6047,6 +6202,7 @@ void InitCrypto(Local<Object> target,
   env->SetMethod(target, "setFipsCrypto", SetFipsCrypto);
   env->SetMethod(target, "PBKDF2", PBKDF2);
   env->SetMethod(target, "randomBytes", RandomBytes);
+  env->SetMethod(target, "randomFill", RandomBytesBuffer);
   env->SetMethod(target, "timingSafeEqual", TimingSafeEqual);
   env->SetMethod(target, "getSSLCiphers", GetSSLCiphers);
   env->SetMethod(target, "getCiphers", GetCiphers);

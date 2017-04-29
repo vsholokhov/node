@@ -65,11 +65,11 @@ const zlib = require('zlib');
 const http = require('http');
 const fs = require('fs');
 const request = http.get({ host: 'example.com',
-                         path: '/',
-                         port: 80,
-                         headers: { 'Accept-Encoding': 'gzip,deflate' } });
+                           path: '/',
+                           port: 80,
+                           headers: { 'Accept-Encoding': 'gzip,deflate' } });
 request.on('response', (response) => {
-  var output = fs.createWriteStream('example.com_index.html');
+  const output = fs.createWriteStream('example.com_index.html');
 
   switch (response.headers['content-encoding']) {
     // or, just use zlib.createUnzip() to handle both cases
@@ -84,7 +84,9 @@ request.on('response', (response) => {
       break;
   }
 });
+```
 
+```js
 // server example
 // Running a gzip operation on every request is quite expensive.
 // It would be much more efficient to cache the compressed buffer.
@@ -92,8 +94,8 @@ const zlib = require('zlib');
 const http = require('http');
 const fs = require('fs');
 http.createServer((request, response) => {
-  var raw = fs.createReadStream('index.html');
-  var acceptEncoding = request.headers['accept-encoding'];
+  const raw = fs.createReadStream('index.html');
+  let acceptEncoding = request.headers['accept-encoding'];
   if (!acceptEncoding) {
     acceptEncoding = '';
   }
@@ -123,15 +125,16 @@ method that is used to compressed the last chunk of input data:
 // This is a truncated version of the buffer from the above examples
 const buffer = Buffer.from('eJzT0yMA', 'base64');
 
-zlib.unzip(buffer,
-           {finishFlush: zlib.constants.Z_SYNC_FLUSH},
-           (err, buffer) => {
-  if (!err) {
-    console.log(buffer.toString());
-  } else {
-    // handle error
-  }
-});
+zlib.unzip(
+  buffer,
+  {finishFlush: zlib.constants.Z_SYNC_FLUSH},
+  (err, buffer) => {
+    if (!err) {
+      console.log(buffer.toString());
+    } else {
+      // handle error
+    }
+  });
 ```
 
 This will not change the behavior in other error-throwing situations, e.g.
@@ -148,8 +151,9 @@ From `zlib/zconf.h`, modified to node.js's usage:
 
 The memory requirements for deflate are (in bytes):
 
+<!-- eslint-disable semi -->
 ```js
-(1 << (windowBits+2)) +  (1 << (memLevel+9))
+(1 << (windowBits + 2)) + (1 << (memLevel + 9))
 ```
 
 That is: 128K for windowBits=15  +  128K for memLevel = 8
@@ -159,17 +163,12 @@ For example, to reduce the default memory requirements from 256K to 128K, the
 options should be set to:
 
 ```js
-{ windowBits: 14, memLevel: 7 }
+const options = { windowBits: 14, memLevel: 7 };
 ```
 
 This will, however, generally degrade compression.
 
-The memory requirements for inflate are (in bytes)
-
-```js
-1 << windowBits
-```
-
+The memory requirements for inflate are (in bytes) `1 << windowBits`.
 That is, 32K for windowBits=15 (default value) plus a few kilobytes
 for small objects.
 
@@ -278,6 +277,9 @@ Compression strategy.
 <!-- YAML
 added: v0.11.1
 changes:
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `dictionary` option can be an Uint8Array now.
   - version: v5.11.0
     pr-url: https://github.com/nodejs/node/pull/6069
     description: The `finishFlush` option is supported now.
@@ -290,14 +292,15 @@ Each class takes an `options` object.  All options are optional.
 Note that some options are only relevant when compressing, and are
 ignored by the decompression classes.
 
-* `flush` (default: `zlib.constants.Z_NO_FLUSH`)
-* `finishFlush` (default: `zlib.constants.Z_FINISH`)
-* `chunkSize` (default: 16*1024)
-* `windowBits`
-* `level` (compression only)
-* `memLevel` (compression only)
-* `strategy` (compression only)
-* `dictionary` (deflate/inflate only, empty dictionary by default)
+* `flush` {integer} (default: `zlib.constants.Z_NO_FLUSH`)
+* `finishFlush` {integer} (default: `zlib.constants.Z_FINISH`)
+* `chunkSize` {integer} (default: 16\*1024)
+* `windowBits` {integer}
+* `level` {integer} (compression only)
+* `memLevel` {integer} (compression only)
+* `strategy` {integer} (compression only)
+* `dictionary` {Buffer|TypedArray|DataView} (deflate/inflate only, empty dictionary by
+  default)
 
 See the description of `deflateInit2` and `inflateInit2` at
 <http://zlib.net/manual.html#Advanced> for more information on these.
@@ -473,89 +476,201 @@ Returns a new [Unzip][] object with an [options][].
 
 <!--type=misc-->
 
-All of these take a [Buffer][] or string as the first argument, an optional
-second argument to supply options to the `zlib` classes and will call the
-supplied callback with `callback(error, result)`.
+All of these take a [`Buffer`][], [`TypedArray`][], [`DataView`][], or string as
+the first argument, an optional second argument to supply options to the `zlib`
+classes and will call the supplied callback with `callback(error, result)`.
 
 Every method has a `*Sync` counterpart, which accept the same arguments, but
 without a callback.
 
-### zlib.deflate(buf[, options], callback)
+### zlib.deflate(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.deflateSync(buf[, options])
+### zlib.deflateSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Compress a [Buffer][] or string with [Deflate][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.deflateRaw(buf[, options], callback)
+Compress a chunk of data with [Deflate][].
+
+### zlib.deflateRaw(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.deflateRawSync(buf[, options])
+### zlib.deflateRawSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Compress a [Buffer][] or string with [DeflateRaw][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.gunzip(buf[, options], callback)
+Compress a chunk of data with [DeflateRaw][].
+
+### zlib.gunzip(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.gunzipSync(buf[, options])
+### zlib.gunzipSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Decompress a [Buffer][] or string with [Gunzip][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.gzip(buf[, options], callback)
+Decompress a chunk of data with [Gunzip][].
+
+### zlib.gzip(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.gzipSync(buf[, options])
+### zlib.gzipSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Compress a [Buffer][] or string with [Gzip][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.inflate(buf[, options], callback)
+Compress a chunk of data with [Gzip][].
+
+### zlib.inflate(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.inflateSync(buf[, options])
+### zlib.inflateSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Decompress a [Buffer][] or string with [Inflate][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.inflateRaw(buf[, options], callback)
+Decompress a chunk of data with [Inflate][].
+
+### zlib.inflateRaw(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.inflateRawSync(buf[, options])
+### zlib.inflateRawSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Decompress a [Buffer][] or string with [InflateRaw][].
+- `buffer` {Buffer|TypedArray|DataView|string}
 
-### zlib.unzip(buf[, options], callback)
+Decompress a chunk of data with [InflateRaw][].
+
+### zlib.unzip(buffer[, options], callback)
 <!-- YAML
 added: v0.6.0
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
-### zlib.unzipSync(buf[, options])
+### zlib.unzipSync(buffer[, options])
 <!-- YAML
 added: v0.11.12
+changes:
+  - version: REPLACEME
+    pr-url: REPLACEME
+    description: The `buffer` parameter can be any TypedArray or DataView now.
+  - version: REPLACEME
+    pr-url: https://github.com/nodejs/node/pull/12001
+    description: The `buffer` parameter can be an Uint8Array now.
 -->
 
-Decompress a [Buffer][] or string with [Unzip][].
+- `buffer` {Buffer|TypedArray|DataView|string}
+
+Decompress a chunk of data with [Unzip][].
 
 [`Accept-Encoding`]: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.3
 [`Content-Encoding`]: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.11
@@ -570,4 +685,6 @@ Decompress a [Buffer][] or string with [Unzip][].
 [InflateRaw]: #zlib_class_zlib_inflateraw
 [Unzip]: #zlib_class_zlib_unzip
 [`.flush()`]: #zlib_zlib_flush_kind_callback
-[Buffer]: buffer.html
+[`Buffer`]: buffer.html#buffer_class_buffer
+[`DataView`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/DataView
+[`TypedArray`]: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/TypedArray

@@ -1,3 +1,8 @@
+root: true
+
+plugins:
+  - markdown
+
 env:
   node: true
   es6: true
@@ -34,6 +39,7 @@ rules:
   # Best Practices
   # http://eslint.org/docs/rules/#best-practices
   dot-location: [2, property]
+  eqeqeq: [2, smart]
   no-fallthrough: 2
   no-global-assign: 2
   no-multi-spaces: 2
@@ -43,7 +49,9 @@ rules:
   no-throw-literal: 2
   no-unused-labels: 2
   no-useless-call: 2
+  no-useless-concat: 2
   no-useless-escape: 2
+  no-useless-return: 2
   no-void: 2
   no-with: 2
 
@@ -62,7 +70,7 @@ rules:
   no-mixed-requires: 2
   no-new-require: 2
   no-path-concat: 2
-  no-restricted-modules: [2, sys, _linklist]
+  no-restricted-modules: [2, sys]
   no-restricted-properties:
     - 2
     - object: assert
@@ -101,6 +109,16 @@ rules:
   new-parens: 2
   no-mixed-spaces-and-tabs: 2
   no-multiple-empty-lines: [2, {max: 2, maxEOF: 0, maxBOF: 0}]
+  no-restricted-syntax: [2, {
+    selector: "CallExpression[callee.name='setTimeout'][arguments.length<2]",
+    message: "setTimeout() must be invoked with at least two arguments."
+  }, {
+    selector: "CallExpression[callee.name='setInterval'][arguments.length<2]",
+    message: "setInterval() must be invoked with at least 2 arguments."
+  }, {
+    selector: "ThrowStatement > CallExpression[callee.name=/Error$/]",
+    message: "Use new keyword when throwing an Error."
+    }]
   no-tabs: 2
   no-trailing-spaces: 2
   one-var-declaration-per-line: 2
@@ -132,10 +150,8 @@ rules:
 
   # Custom rules in tools/eslint-rules
   align-multiline-assignment: 2
-  assert-fail-single-argument: 2
-  assert-throws-arguments: [2, { requireTwo: false }]
-  new-with-error: [2, Error, RangeError, TypeError, SyntaxError, ReferenceError]
-  timer-arguments: 2
+  assert-throws-arguments: [2, { requireTwo: true }]
+  no-unescaped-regexp-dot: 2
 
 # Global scoped method and vars
 globals:

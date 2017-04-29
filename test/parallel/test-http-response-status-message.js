@@ -20,7 +20,7 @@
 // USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 'use strict';
-const common = require('../common');
+require('../common');
 const assert = require('assert');
 const http = require('http');
 const net = require('net');
@@ -44,14 +44,14 @@ testCases.findByPath = function(path) {
     return testCase.path === path;
   });
   if (matching.length === 0) {
-    common.fail(`failed to find test case with path ${path}`);
+    assert.fail(`failed to find test case with path ${path}`);
   }
   return matching[0];
 };
 
 const server = net.createServer(function(connection) {
   connection.on('data', function(data) {
-    const path = data.toString().match(/GET (.*) HTTP.1.1/)[1];
+    const path = data.toString().match(/GET (.*) HTTP\/1\.1/)[1];
     const testCase = testCases.findByPath(path);
 
     connection.write(testCase.response);

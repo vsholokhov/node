@@ -5,7 +5,7 @@
 Node.js comes with a variety of CLI options. These options expose built-in
 debugging, multiple ways to execute scripts, and other helpful runtime options.
 
-To view this documentation as a manual page in your terminal, run `man node`.
+To view this documentation as a manual page in a terminal, run `man node`.
 
 
 ## Synopsis
@@ -94,7 +94,7 @@ Follows `require()`'s module resolution
 rules. `module` may be either a path to a file, or a node module name.
 
 
-### `--inspect[=host:port]`
+### `--inspect[=[host:]port]`
 <!-- YAML
 added: v6.3.0
 -->
@@ -106,7 +106,7 @@ and profile Node.js instances. The tools attach to Node.js instances via a
 tcp port and communicate using the [Chrome Debugging Protocol][].
 
 
-### `--inspect-brk[=host:port]`
+### `--inspect-brk[=[host:]port]`
 <!-- YAML
 added: v7.6.0
 -->
@@ -137,12 +137,34 @@ added: v0.11.14
 
 Throw errors for deprecations.
 
+### `--pending-deprecation`
+<!-- YAML
+added: REPLACEME
+-->
+
+Emit pending deprecation warnings.
+
+*Note*: Pending deprecations are generally identical to a runtime deprecation
+with the notable exception that they are turned *off* by default and will not
+be emitted unless either the `--pending-deprecation` command line flag, or the
+`NODE_PENDING_DEPRECATION=1` environment variable, is set. Pending deprecations
+are used to provide a kind of selective "early warning" mechanism that
+developers may leverage to detect deprecated API usage.
+
 ### `--no-warnings`
 <!-- YAML
 added: v6.0.0
 -->
 
 Silence all process warnings (including deprecations).
+
+### `--napi-modules`
+<!-- YAML
+added: REPLACEME
+-->
+
+Enable loading native modules compiled with the ABI-stable Node.js API (N-API)
+(experimental).
 
 ### `--trace-warnings`
 <!-- YAML
@@ -375,6 +397,54 @@ added: v7.5.0
 
 When set to `1`, process warnings are silenced.
 
+### `NODE_OPTIONS=options...`
+<!-- YAML
+added: REPLACEME
+-->
+
+`options...` are interpreted as if they had been specified on the command line
+before the actual command line (so they can be overriden).  Node will exit with
+an error if an option that is not allowed in the environment is used, such as
+`-p` or a script file.
+
+Node options that are allowed are:
+- `--enable-fips`
+- `--force-fips`
+- `--icu-data-dir`
+- `--no-deprecation`
+- `--no-warnings`
+- `--openssl-config`
+- `--prof-process`
+- `--redirect-warnings`
+- `--require`, `-r`
+- `--throw-deprecation`
+- `--trace-deprecation`
+- `--trace-events-enabled`
+- `--trace-sync-io`
+- `--trace-warnings`
+- `--track-heap-objects`
+- `--use-bundled-ca`
+- `--use-openssl-ca`
+- `--v8-pool-size`
+- `--zero-fill-buffers`
+
+V8 options that are allowed are:
+- `--max_old_space_size`
+
+### `NODE_PENDING_DEPRECATION=1`
+<!-- YAML
+added: REPLACEME
+-->
+
+When set to `1`, emit pending deprecation warnings.
+
+*Note*: Pending deprecations are generally identical to a runtime deprecation
+with the notable exception that they are turned *off* by default and will not
+be emitted unless either the `--pending-deprecation` command line flag, or the
+`NODE_PENDING_DEPRECATION=1` environment variable, is set. Pending deprecations
+are used to provide a kind of selective "early warning" mechanism that
+developers may leverage to detect deprecated API usage.
+
 ### `NODE_PRESERVE_SYMLINKS=1`
 <!-- YAML
 added: v7.1.0
@@ -392,16 +462,6 @@ Path to the file used to store the persistent REPL history. The default path is
 `~/.node_repl_history`, which is overridden by this variable. Setting the value
 to an empty string (`""` or `" "`) disables persistent REPL history.
 
-
-### `NODE_TTY_UNSAFE_ASYNC=1`
-<!-- YAML
-added: v6.4.0
--->
-
-When set to `1`, writes to `stdout` and `stderr` will be non-blocking and
-asynchronous when outputting to a TTY on platforms which support async stdio.
-Setting this will void any guarantee that stdio will not be interleaved or
-dropped at program exit. **Use of this mode is not recommended.**
 
 ### `NODE_EXTRA_CA_CERTS=file`
 <!-- YAML

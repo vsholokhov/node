@@ -240,7 +240,6 @@ NODE_EXTERN void RunAtExit(Environment* env);
     1000 * static_cast<double>(t))
 #define NODE_V8_UNIXTIME(v) (static_cast<double>((v)->NumberValue())/1000.0);
 
-// Used to be a macro, hence the uppercase name.
 #define NODE_DEFINE_CONSTANT(target, constant)                                \
   do {                                                                        \
     v8::Isolate* isolate = target->GetIsolate();                              \
@@ -510,6 +509,23 @@ extern "C" NODE_EXTERN void node_module_register(void* mod);
  * Callbacks are run in reverse order of registration, i.e. newest first.
  */
 NODE_EXTERN void AtExit(void (*cb)(void* arg), void* arg = 0);
+
+/* Registers a callback with the passed-in Environment instance. The callback
+ * is called after the event loop exits, but before the VM is disposed.
+ * Callbacks are run in reverse order of registration, i.e. newest first.
+ */
+NODE_EXTERN void AtExit(Environment* env, void (*cb)(void* arg), void* arg = 0);
+
+typedef void (*promise_hook_func) (v8::PromiseHookType type,
+                                   v8::Local<v8::Promise> promise,
+                                   v8::Local<v8::Value> parent,
+                                   void* arg);
+
+/* Registers an additional v8::PromiseHook wrapper. This API exists because V8
+ * itself supports only a single PromiseHook. */
+NODE_EXTERN void AddPromiseHook(v8::Isolate* isolate,
+                                promise_hook_func fn,
+                                void* arg);
 
 }  // namespace node
 

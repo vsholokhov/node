@@ -22,59 +22,64 @@
 'use strict';
 // test convenience methods with and without options supplied
 
-require('../common');
+const common = require('../common');
 const assert = require('assert');
 const zlib = require('zlib');
 
-let hadRun = 0;
+// Must be a multiple of 4 characters in total to test all ArrayBufferView
+// types.
+const expectStr = 'blah'.repeat(8);
+const expectBuf = Buffer.from(expectStr);
 
-const expect = 'blahblahblahblahblahblah';
 const opts = {
   level: 9,
   chunkSize: 1024,
 };
 
-[
-  ['gzip', 'gunzip'],
-  ['gzip', 'unzip'],
-  ['deflate', 'inflate'],
-  ['deflateRaw', 'inflateRaw'],
-].forEach(function(method) {
+for (const [type, expect] of [
+  ['string', expectStr],
+  ['Buffer', expectBuf],
+  ...common.getArrayBufferViews(expectBuf).map((obj) =>
+    [obj[Symbol.toStringTag], obj]
+  )
+]) {
+  for (const method of [
+    ['gzip', 'gunzip'],
+    ['gzip', 'unzip'],
+    ['deflate', 'inflate'],
+    ['deflateRaw', 'inflateRaw'],
+  ]) {
+    zlib[method[0]](expect, opts, common.mustCall((err, result) => {
+      zlib[method[1]](result, opts, common.mustCall((err, result) => {
+        assert.strictEqual(result.toString(), expectStr,
+                           `Should get original string after ${method[0]}/` +
+                           `${method[1]} ${type} with options.`);
+      }));
+    }));
 
-  zlib[method[0]](expect, opts, function(err, result) {
-    zlib[method[1]](result, opts, function(err, result) {
-      assert.strictEqual(result.toString(), expect,
-                         'Should get original string after ' +
-                   method[0] + '/' + method[1] + ' with options.');
-      hadRun++;
-    });
-  });
+    zlib[method[0]](expect, common.mustCall((err, result) => {
+      zlib[method[1]](result, common.mustCall((err, result) => {
+        assert.strictEqual(result.toString(), expectStr,
+                           `Should get original string after ${method[0]}/` +
+                           `${method[1]} ${type} without options.`);
+      }));
+    }));
 
-  zlib[method[0]](expect, function(err, result) {
-    zlib[method[1]](result, function(err, result) {
-      assert.strictEqual(result.toString(), expect,
-                         'Should get original string after ' +
-                   method[0] + '/' + method[1] + ' without options.');
-      hadRun++;
-    });
-  });
+    {
+      const compressed = zlib[method[0] + 'Sync'](expect, opts);
+      const decompressed = zlib[method[1] + 'Sync'](compressed, opts);
+      assert.strictEqual(decompressed.toString(), expectStr,
+                         `Should get original string after ${method[0]}Sync/` +
+                         `${method[1]}Sync ${type} with options.`);
+    }
 
-  let result = zlib[method[0] + 'Sync'](expect, opts);
-  result = zlib[method[1] + 'Sync'](result, opts);
-  assert.strictEqual(result.toString(), expect,
-                     'Should get original string after ' +
-               method[0] + '/' + method[1] + ' with options.');
-  hadRun++;
 
-  result = zlib[method[0] + 'Sync'](expect);
-  result = zlib[method[1] + 'Sync'](result);
-  assert.strictEqual(result.toString(), expect,
-                     'Should get original string after ' +
-               method[0] + '/' + method[1] + ' without options.');
-  hadRun++;
-
-});
-
-process.on('exit', function() {
-  assert.strictEqual(hadRun, 16, 'expect 16 compressions');
-});
+    {
+      const compressed = zlib[method[0] + 'Sync'](expect);
+      const decompressed = zlib[method[1] + 'Sync'](compressed);
+      assert.strictEqual(decompressed.toString(), expectStr,
+                         `Should get original string after ${method[0]}Sync/` +
+                         `${method[1]}Sync ${type} without options.`);
+    }
+  }
+}
